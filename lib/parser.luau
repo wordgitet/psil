@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 --!native
 --!optimize 2
 
@@ -649,6 +653,3 @@ parser.is_comment_skipped = function(item)
 end
 
 return parser
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

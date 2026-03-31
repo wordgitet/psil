@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local norvig_cases = require("../cases/norvig_cases")
 local source_suite = require("../support/source_suite")
 
@@ -8,6 +12,3 @@ function norvig_spec.run()
 end
 
 return norvig_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

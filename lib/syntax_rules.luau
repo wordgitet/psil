@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local env = require("./env")
 local errors = require("./errors")
 local value = require("./value")
@@ -1035,6 +1039,3 @@ function syntax_rules.expand(transformer, form)
 end
 
 return syntax_rules
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

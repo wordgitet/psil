@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local loader = {}
 
 local cache = {}
@@ -132,6 +136,3 @@ function loader.dirname(path)
 end
 
 return loader
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

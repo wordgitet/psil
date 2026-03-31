@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local function dirname(path)
 	return path:match("^(.*)/[^/]+$") or "."
 end
@@ -44,6 +48,3 @@ for index = 1, #arg do
 end
 
 loader.run(root .. "/host/main.luau", argv)
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

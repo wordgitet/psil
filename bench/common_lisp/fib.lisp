@@ -1,3 +1,6 @@
+;; SPDX-License-Identifier: MPL-2.0
+;;
+
 (defun fib (n)
 	(if (< n 2)
 		n
@@ -5,5 +8,3 @@
 
 (write (fib 26))
 (terpri)
-;; SPDX-License-Identifier: MPL-2.0
-;;

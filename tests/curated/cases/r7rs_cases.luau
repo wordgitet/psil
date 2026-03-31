@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local r7rs_cases = {
 	{
 		feature_area = "quotation",
@@ -247,6 +251,3 @@ local r7rs_cases = {
 }
 
 return r7rs_cases
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local errors = require("./errors")
 local value = require("./value")
 
@@ -77,6 +81,3 @@ function env.extend(parent, names, values)
 end
 
 return env
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

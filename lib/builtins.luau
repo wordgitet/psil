@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 --!native
 --!optimize 2
 
@@ -5467,6 +5471,3 @@ function builtins.add(scope, io_adapter)
 end
 
 return builtins
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

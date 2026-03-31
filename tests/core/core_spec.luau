@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local assert_mod = require("../support/assert")
 local host_io = require("../../host/io")
 local runner = require("../../host/runner")
@@ -537,6 +541,3 @@ function core_spec.run()
 end
 
 return core_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

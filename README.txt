@@ -1,6 +1,7 @@
 SPDX-License-Identifier: MPL-2.0
 This file is part of Psil.
 
+
 Psil
 ====
 
@@ -31,6 +32,9 @@ host/
 
 roblox/
   Roblox app entrypoint and session/UI code.
+
+assets/
+  Branding and artwork assets such as the logo and game thumbnail.
 
 generated/roblox/
   Built Roblox package used by Rojo sync.
@@ -136,11 +140,15 @@ If a change causes output to leak between panes again, treat that as a bug.
 License
 =======
 
-This project is intended to use the Mozilla Public License, Version 2.0
-(MPL-2.0).
+Source code in this repository is licensed under the Mozilla Public License,
+Version 2.0 (MPL-2.0). See:
 
-If the repository is published, add the full MPL-2.0 license text as a LICENSE
-file alongside this readme.
+  COPYING
+
+Branding and artwork assets are licensed under CC0-1.0. This includes the
+logo and thumbnail assets under assets/. See:
+
+  COPYING-CC0-1.0
 
 
 Status

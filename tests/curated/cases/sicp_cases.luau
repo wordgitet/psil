@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local sicp_cases = {
 	{
 		feature_area = "environment_model",
@@ -44,6 +48,3 @@ local sicp_cases = {
 }
 
 return sicp_cases
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

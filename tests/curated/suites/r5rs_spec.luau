@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local r5rs_cases = require("../cases/r5rs_cases")
 local source_suite = require("../support/source_suite")
 
@@ -8,6 +12,3 @@ function r5rs_spec.run()
 end
 
 return r5rs_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

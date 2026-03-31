@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local lisp = require("../lib/lisp")
 local roblox_io = require("./io")
 local session = require("./session")
@@ -31,6 +35,3 @@ function roblox_lisp.new_session(callbacks)
 end
 
 return roblox_lisp
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

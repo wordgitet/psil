@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local value = require("./value")
 
 -- Printer for Scheme-visible runtime values.
@@ -275,6 +279,3 @@ function printer.to_string(item)
 end
 
 return printer
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

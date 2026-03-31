@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local norvig_cases = {
 	{
 		feature_area = "special_forms",
@@ -44,6 +48,3 @@ local norvig_cases = {
 }
 
 return norvig_cases
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local sicp_cases = require("../cases/sicp_cases")
 local source_suite = require("../support/source_suite")
 
@@ -8,6 +12,3 @@ function sicp_spec.run()
 end
 
 return sicp_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

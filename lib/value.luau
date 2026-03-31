@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local value = {}
 
 -- Runtime value constructors and predicates.
@@ -447,6 +451,3 @@ function value.is_proper_list(item)
 end
 
 return value
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

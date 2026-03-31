@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local function dirname(path)
 	return path:match("^(.*)/[^/]+$") or "."
 end
@@ -39,6 +43,3 @@ local root = normalize(dirname(script_path) .. "/..")
 local loader = dofile(root .. "/tools/loader.lua")
 
 loader.run(root .. "/tests/run.luau", {})
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

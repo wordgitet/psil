@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local gui_service = game:GetService("GuiService")
 local players = game:GetService("Players")
 local replicated_storage = game:GetService("ReplicatedStorage")
@@ -720,6 +724,3 @@ end)
 
 set_tab("editor")
 append_history("status", "Psil playground ready", "repl")
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

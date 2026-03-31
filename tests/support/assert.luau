@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local errors = require("../../lib/errors")
 
 local assert_mod = {}
@@ -47,6 +51,3 @@ function assert_mod.errors(fn, expected_fragment, label)
 end
 
 return assert_mod
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

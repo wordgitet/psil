@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local builtins = require("./builtins")
 local env = require("./env")
 local evaluator = require("./eval")
@@ -49,6 +53,3 @@ function lisp.to_string(item)
 end
 
 return lisp
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

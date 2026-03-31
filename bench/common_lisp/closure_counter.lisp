@@ -1,3 +1,6 @@
+;; SPDX-License-Identifier: MPL-2.0
+;;
+
 (defun make-counter (n)
 	(lambda ()
 		(setf n (+ n 1))
@@ -11,5 +14,3 @@
 (let ((c (make-counter 0)))
 	(write (drive c 1000 0))
 	(terpri))
-;; SPDX-License-Identifier: MPL-2.0
-;;

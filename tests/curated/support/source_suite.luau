@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local assert_mod = require("../../support/assert")
 local runner = require("../../../host/runner")
 local lisp = require("../../../lib/lisp")
@@ -35,6 +39,3 @@ function source_suite.run(suite_name, cases)
 end
 
 return source_suite
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local errors = require("../lib/errors")
 local lisp = require("../lib/lisp")
 local repl = require("./repl")
@@ -24,6 +28,3 @@ if #argv >= 1 then
 else
 	repl.run()
 end
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

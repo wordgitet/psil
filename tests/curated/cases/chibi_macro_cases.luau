@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local chibi_macro_cases = {
 	{
 		feature_area = "macros",
@@ -197,6 +201,3 @@ local chibi_macro_cases = {
 }
 
 return chibi_macro_cases
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

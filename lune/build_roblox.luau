@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 --> Build a Roblox-safe Psil module tree for Rojo sync.
 
 local fs = require("@lune/fs")
@@ -83,6 +87,3 @@ build_lib_modules()
 build_roblox_modules()
 
 print("built Roblox package at " .. package_root)
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local host_io = require("./io")
 local lisp = require("../lib/lisp")
 
@@ -31,6 +35,3 @@ function runner.run_file(path, scope, io_adapter)
 end
 
 return runner
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local bigint = {}
 
 -- Narrow decimal-string bigint support.
@@ -385,6 +389,3 @@ function bigint.integer_sqrt(text)
 end
 
 return bigint
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

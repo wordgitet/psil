@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local errors = require("../lib/errors")
 local builtins = require("../lib/builtins")
 local env_mod = require("../lib/env")
@@ -981,6 +985,3 @@ function suite_runner.main(argv)
 end
 
 return suite_runner.main({ ... })
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

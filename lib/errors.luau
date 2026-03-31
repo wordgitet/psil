@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local value = require("./value")
 
 local errors = {}
@@ -78,6 +82,3 @@ function errors.to_condition(err)
 end
 
 return errors
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

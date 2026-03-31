@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local assert_mod = require("../support/assert")
 local errors = require("../../lib/errors")
 local session = require("../../roblox/session")
@@ -65,6 +69,3 @@ function roblox_session_spec.run()
 end
 
 return roblox_session_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

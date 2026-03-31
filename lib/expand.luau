@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local env = require("./env")
 local errors = require("./errors")
 local value = require("./value")
@@ -522,6 +526,3 @@ function expand.all(forms, scope)
 end
 
 return expand
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

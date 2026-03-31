@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local assert_mod = require("../support/assert")
 local repl = require("../../host/repl")
 
@@ -66,6 +70,3 @@ function repl_spec.run()
 end
 
 return repl_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

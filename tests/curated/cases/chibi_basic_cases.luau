@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local chibi_basic_cases = {
 	{
 		feature_area = "recursion",
@@ -118,6 +122,3 @@ local chibi_basic_cases = {
 }
 
 return chibi_basic_cases
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

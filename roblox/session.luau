@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local errors = require("../lib/errors")
 local lisp = require("../lib/lisp")
 local roblox_io = require("./io")
@@ -228,6 +232,3 @@ function session.new(callbacks, options)
 end
 
 return session
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

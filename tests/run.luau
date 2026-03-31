@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local suite_registry = {
 	{
 		id = "core",
@@ -94,6 +98,3 @@ for _, entry in ipairs(suite_registry) do
 end
 
 print(string.format("ok - %d test suites passed", passed))
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

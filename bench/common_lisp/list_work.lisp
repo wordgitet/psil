@@ -1,3 +1,6 @@
+;; SPDX-License-Identifier: MPL-2.0
+;;
+
 (defun range (n acc)
 	(if (= n 0)
 		acc
@@ -6,5 +9,3 @@
 (let ((xs (range 1000 '())))
 	(write (length (reverse xs)))
 	(terpri))
-;; SPDX-License-Identifier: MPL-2.0
-;;

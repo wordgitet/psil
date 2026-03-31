@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local roblox_io = {}
 
 function roblox_io.new(callbacks)
@@ -11,6 +15,3 @@ function roblox_io.new(callbacks)
 end
 
 return roblox_io
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

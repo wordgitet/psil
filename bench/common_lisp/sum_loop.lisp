@@ -1,3 +1,6 @@
+;; SPDX-License-Identifier: MPL-2.0
+;;
+
 (defun sum-to (n acc)
 	(if (= n 0)
 		acc
@@ -5,5 +8,3 @@
 
 (write (sum-to 1000 0))
 (terpri)
-;; SPDX-License-Identifier: MPL-2.0
-;;

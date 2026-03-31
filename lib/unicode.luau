@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local unicode = {}
 
 local upper_to_lower = {}
@@ -222,6 +226,3 @@ function unicode.map_codepoints(items, mode)
 end
 
 return unicode
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

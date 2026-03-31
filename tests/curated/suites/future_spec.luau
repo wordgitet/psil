@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local errors = require("../../../lib/errors")
 local runner = require("../../../host/runner")
 local lisp = require("../../../lib/lisp")
@@ -69,6 +73,3 @@ function future_spec.run()
 end
 
 return future_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

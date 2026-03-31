@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 --!native
 --!optimize 2
 
@@ -3330,6 +3334,3 @@ function evaluator.add_builtins(scope, io_adapter)
 end
 
 return evaluator
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

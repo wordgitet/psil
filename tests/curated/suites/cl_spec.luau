@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local cl_cases = require("../cases/cl_cases")
 local source_suite = require("../support/source_suite")
 
@@ -8,6 +12,3 @@ function cl_spec.run()
 end
 
 return cl_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

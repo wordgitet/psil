@@ -1,3 +1,6 @@
+;; SPDX-License-Identifier: MPL-2.0
+;;
+
 (begin
 	(define (sum-to n acc)
 		(if (= n 0)
@@ -5,5 +8,3 @@
 			(sum-to (- n 1) (+ acc n))))
 
 	(sum-to 1000 0))
-;; SPDX-License-Identifier: MPL-2.0
-;;

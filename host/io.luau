@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local host_io = {}
 
 -- Host-side I/O adapter used by the shared builtin layer.
@@ -36,6 +40,3 @@ function host_io.new(options)
 end
 
 return host_io
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

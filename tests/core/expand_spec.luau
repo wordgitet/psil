@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local assert_mod = require("../support/assert")
 local lisp = require("../../lib/lisp")
 
@@ -55,6 +59,3 @@ function expand_spec.run()
 end
 
 return expand_spec
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

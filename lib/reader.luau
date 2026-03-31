@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 --!native
 --!optimize 2
 
@@ -319,6 +323,3 @@ function reader.is_complete(source)
 end
 
 return reader
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

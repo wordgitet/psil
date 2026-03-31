@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local errors = require("../lib/errors")
 local lisp = require("../lib/lisp")
 local reader = require("../lib/reader")
@@ -68,6 +72,3 @@ function repl.run(options)
 end
 
 return repl
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

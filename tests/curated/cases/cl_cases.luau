@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local cl_cases = {
 	{
 		feature_area = "control_flow",
@@ -72,6 +76,3 @@ local cl_cases = {
 }
 
 return cl_cases
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

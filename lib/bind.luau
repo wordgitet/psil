@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local env = require("./env")
 local errors = require("./errors")
 local value = require("./value")
@@ -73,6 +77,3 @@ function bind.bind_args(parent_scope, param_spec, args)
 end
 
 return bind
---[[
-SPDX-License-Identifier: MPL-2.0
-]]

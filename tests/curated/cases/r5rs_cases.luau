@@ -1,3 +1,7 @@
+--[[
+SPDX-License-Identifier: MPL-2.0
+]]
+
 local r5rs_cases = {
 	{
 		feature_area = "procedures",
@@ -240,6 +244,3 @@ local r5rs_cases = {
 }
 
 return r5rs_cases
---[[
-SPDX-License-Identifier: MPL-2.0
-]]
