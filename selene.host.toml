@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+
+std = "lua51"
+
+exclude = ["host/main.luau", "tests/run.lua", "tools/loader.lua"]
+
+[config]
+unused_variable = { allow_unused_self = true }
+
+[lints]
+mixed_table = "allow"

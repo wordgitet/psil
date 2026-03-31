@@ -1,0 +1,22 @@
+{
+	"name": "Psil",
+	"servePort": 34872,
+	"tree": {
+		"$className": "DataModel",
+		"ReplicatedStorage": {
+			"$className": "ReplicatedStorage",
+			"Psil": {
+				"$path": "generated/roblox/ReplicatedStorage/Psil"
+			}
+		},
+		"StarterPlayer": {
+			"$className": "StarterPlayer",
+			"StarterPlayerScripts": {
+				"$className": "StarterPlayerScripts",
+				"PsilApp": {
+					"$path": "roblox/app.client.luau"
+				}
+			}
+		}
+	}
+}

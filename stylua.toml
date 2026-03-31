@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+
+indent_type = "Tabs"
+indent_width = 4
+column_width = 80
+quote_style = "AutoPreferDouble"
+call_parentheses = "Always"

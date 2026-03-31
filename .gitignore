@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+
+generated/roblox/
+
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+*.log
+.DS_Store
+Thumbs.db

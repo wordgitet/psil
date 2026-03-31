@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+
+std = "roblox"
+
+exclude = [
+	"host/**",
+	"tests/**",
+	"tools/**",
+	"lune/**",
+	"lib/**",
+	"roblox/init.luau",
+	"roblox/io.luau",
+	"roblox/session.luau",
+]
+
+[config]
+unused_variable = { allow_unused_self = true }
+
+[lints]
+mixed_table = "allow"

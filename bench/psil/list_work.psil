@@ -1,0 +1,10 @@
+(begin
+	(define (range n acc)
+		(if (= n 0)
+			acc
+			(range (- n 1) (cons n acc))))
+
+	(define xs (range 1000 '()))
+	(length (reverse xs)))
+;; SPDX-License-Identifier: MPL-2.0
+;;
