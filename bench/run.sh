@@ -22,11 +22,20 @@ run_bench() {
 
 	while [ "$run" -le "$RUNS" ]; do
 		local seconds_kb
+		local status=0
+		set +e
 		seconds_kb="$(
 			{
 				/usr/bin/time -f '%e\t%M' "$@" >/dev/null
 			} 2>&1
 		)"
+		status=$?
+		set -e
+
+		if [ "$status" -ne 0 ]; then
+			printf '%-18s run %d/%d     failed\n' "$label" "$run" "$RUNS"
+			return 1
+		fi
 		local seconds
 		local kb
 		seconds="$(printf '%s' "$seconds_kb" | cut -f1)"
@@ -46,7 +55,9 @@ run_bench() {
 
 for bench in "${benchmarks[@]}"; do
 	printf '\n== %s ==\n' "$bench"
-	run_bench "psil" lua "$ROOT/host/main.lua" "$ROOT/bench/psil/${bench}.psil"
-	run_bench "clisp" clisp -q -norc -i "$ROOT/bench/common_lisp/${bench}.lisp" -x '(ext:quit)'
-	run_bench "gcl" gcl -load "$ROOT/bench/common_lisp/${bench}.lisp" -eval '(bye)'
+	run_bench "psil-auto" lua "$ROOT/bench/psil_bench.lua" scheme-auto "$ROOT/bench/psil/${bench}.psil" || true
+	run_bench "psil-interp" lua "$ROOT/bench/psil_bench.lua" scheme-interp "$ROOT/bench/psil/${bench}.psil" || true
+	run_bench "psil-cl" lua "$ROOT/bench/psil_bench.lua" cl-interp "$ROOT/bench/psil_cl/${bench}.lisp" || true
+	run_bench "clisp" clisp -q -norc -i "$ROOT/bench/common_lisp/${bench}.lisp" -x '(ext:quit)' || true
+	run_bench "gcl" gcl -load "$ROOT/bench/common_lisp/${bench}.lisp" -eval '(bye)' || true
 done

@@ -1,0 +1,9 @@
+;; SPDX-License-Identifier: MPL-2.0
+;;
+
+(defun sum-to (n acc)
+	(if (= n 0)
+		acc
+		(sum-to (- n 1) (+ acc n))))
+
+(sum-to 1000 0)

@@ -27,7 +27,10 @@ end
 
 function runner.eval_source(source, scope, io_adapter, options)
 	local env_scope = scope or runner.new_env(io_adapter, options)
-	return lisp.eval(source, env_scope)
+	local execution = lisp.new_execution({
+		engine = env_scope.dialect == "scheme" and "auto" or "interp",
+	})
+	return lisp.eval(source, env_scope, execution)
 end
 
 function runner.run_file(path, scope, io_adapter, options)

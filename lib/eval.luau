@@ -17,6 +17,7 @@ local expand = require("./expand")
 local reader = require("./reader")
 local syntax_rules = require("./syntax_rules")
 local value = require("./value")
+local vm = require("./vm")
 
 local evaluator = {}
 local special_forms = {}
@@ -54,6 +55,13 @@ local apply_callable_cps
 local run_cps
 local eval_expanded_sequence_cps
 local expand_syntax_binding
+local apply_callable_direct
+local eval_sequence_direct
+local eval_form_direct
+local eval_expanded_form_direct
+local eval_expanded_sequence_direct
+local cl_compat_enabled
+local collect_special_names
 
 -- Every evaluation path shares the same cooperative budget/cancellation rules
 -- so host runs, Roblox runs, and long compatibility-suite cases behave the
@@ -114,10 +122,11 @@ end
 
 local function eval_sequence(forms, scope, _, execution)
 	local result = value.list({})
+	local eval_form_impl = _ or eval_form_direct or eval_form
 
 	for _, form in ipairs(forms) do
 		checkpoint(execution)
-		result = eval_form(form, scope, execution)
+		result = eval_form_impl(form, scope, execution)
 	end
 
 	return result
@@ -125,10 +134,11 @@ end
 
 local function eval_expanded_sequence(forms, scope, execution)
 	local result = value.list({})
+	local eval_expanded_form_impl = eval_expanded_form_direct or eval_expanded_form
 
 	for _, form in ipairs(forms) do
 		checkpoint(execution)
-		result = eval_expanded_form(form, scope, execution)
+		result = eval_expanded_form_impl(form, scope, execution)
 	end
 
 	return result
@@ -151,7 +161,7 @@ local function apply_callable(callable, args, execution)
 			local next_value = args[1]
 
 			if callable.converter ~= nil then
-				next_value = apply_callable(callable.converter, {
+				next_value = apply_callable_direct(callable.converter, {
 					next_value,
 				}, execution)
 			end
@@ -166,14 +176,18 @@ local function apply_callable(callable, args, execution)
 			end)
 		end
 
-		return callable.fn(args, apply_callable, execution)
+		return callable.fn(args, apply_callable_direct, execution)
 	end
 
 	if value.is_closure(callable) then
+		if callable.vm_chunk ~= nil then
+			return vm.run_chunk(callable.vm_chunk, callable.env, execution, apply_callable_direct, callable.vm_captures, args)
+		end
+
 		local call_scope
 
 		if callable.param_spec.keywords ~= nil and callable.param_spec.keywords.cl then
-			call_scope = bind.bind_cl_args(callable.env, callable.param_spec, args, eval_form, execution)
+			call_scope = bind.bind_cl_args(callable.env, callable.param_spec, args, eval_form_direct, execution)
 		else
 			call_scope = bind.bind_args(callable.env, callable.param_spec, args)
 		end
@@ -197,10 +211,14 @@ local function apply_callable(callable, args, execution)
 		end
 
 		if callable.preexpand_body then
-			local expanded_body = {}
+			local expanded_body = callable.expanded_body
 
-			for index, form in ipairs(body_forms) do
-				expanded_body[index] = expand.form(form, body_scope)
+			if expanded_body == nil then
+				expanded_body = {}
+
+				for index, form in ipairs(body_forms) do
+					expanded_body[index] = expand.form(form, body_scope)
+				end
 			end
 
 			if callable.needs_cps then
@@ -209,7 +227,7 @@ local function apply_callable(callable, args, execution)
 				end)
 			end
 
-			return eval_expanded_sequence(expanded_body, body_scope, execution)
+			return eval_expanded_sequence_direct(expanded_body, body_scope, execution)
 		end
 
 		if callable.needs_cps then
@@ -218,7 +236,7 @@ local function apply_callable(callable, args, execution)
 			end)
 		end
 
-		return eval_sequence(body_forms, body_scope, eval_form, execution)
+		return eval_sequence_direct(body_forms, body_scope, eval_form_direct, execution)
 	end
 
 	errors.raise("type", "attempted to call a non-function value")
@@ -273,7 +291,7 @@ local function run_dynamic_transition(execution, from_stack, to_stack)
 	local prefix = common_dynamic_prefix(active_from, active_to)
 
 	for index = #active_from, prefix + 1, -1 do
-		apply_callable(active_from[index].after, {}, execution)
+		apply_callable_direct(active_from[index].after, {}, execution)
 	end
 
 	if execution ~= nil then
@@ -281,7 +299,7 @@ local function run_dynamic_transition(execution, from_stack, to_stack)
 	end
 
 	for index = prefix + 1, #active_to do
-		apply_callable(active_to[index].before, {}, execution)
+		apply_callable_direct(active_to[index].before, {}, execution)
 	end
 
 	if execution ~= nil then
@@ -297,7 +315,7 @@ local function perform_dynamic_wind(before_fn, thunk_fn, after_fn, execution)
 	}
 	local entered_stack = copy_dynamic_stack(previous_stack)
 
-	apply_callable(before_fn, {}, execution)
+	apply_callable_direct(before_fn, {}, execution)
 	entered_stack[#entered_stack + 1] = frame
 
 	if execution ~= nil then
@@ -305,7 +323,7 @@ local function perform_dynamic_wind(before_fn, thunk_fn, after_fn, execution)
 	end
 
 	local ok, result = pcall(function()
-		return apply_callable(thunk_fn, {}, execution)
+		return apply_callable_direct(thunk_fn, {}, execution)
 	end)
 	local active_stack = current_dynamic_stack(execution)
 
@@ -314,7 +332,7 @@ local function perform_dynamic_wind(before_fn, thunk_fn, after_fn, execution)
 			execution.dynamic_stack = previous_stack
 		end
 
-		apply_callable(after_fn, {}, execution)
+		apply_callable_direct(after_fn, {}, execution)
 	end
 
 	if ok then
@@ -361,7 +379,7 @@ local function lookup_binding(scope, symbol)
 	return frame.values[symbol.name]
 end
 
-local function cl_compat_enabled(scope, execution)
+cl_compat_enabled = function(scope, execution)
 	if scope ~= nil and scope.dialect == "cl-compat" then
 		return true
 	end
@@ -445,7 +463,7 @@ local function use_special_lookup(scope, name, execution)
 		and (env.has_special(scope, name) or env.is_global_special(scope, name))
 end
 
-local function collect_special_names(items, start_index)
+collect_special_names = function(items, start_index)
 	local special_names = {}
 	local ordered = {}
 	local index = start_index
@@ -1505,8 +1523,24 @@ local function body_allows_preexpand(forms)
 	return true
 end
 
+local function cached_expanded_body(forms, scope)
+	local stripped_body, special_names = collect_special_names(forms, 1)
+
+	if next(special_names) ~= nil or #stripped_body ~= #forms then
+		return nil
+	end
+
+	local expanded_body = {}
+
+	for index, form in ipairs(forms) do
+		expanded_body[index] = expand.form(form, scope)
+	end
+
+	return expanded_body
+end
+
 function eval_form(form, scope, execution)
-	return eval_expanded_form(expand.form(form, scope), scope, execution)
+	return eval_expanded_form_direct(expand.form(form, scope), scope, execution)
 end
 
 function eval_expanded_form(form, scope, execution)
@@ -1539,7 +1573,7 @@ function eval_expanded_form(form, scope, execution)
 
 		if value.is_syntax(binding) then
 			local expanded = expand_syntax_binding(binding.transformer, form, scope, execution)
-			return eval_form(expanded, scope, execution)
+			return eval_form_direct(expanded, scope, execution)
 		end
 
 		local handler = special_forms[head.name]
@@ -1551,18 +1585,18 @@ function eval_expanded_form(form, scope, execution)
 		end
 
 		if handler ~= nil and binding == nil then
-			return handler(form, scope, eval_expanded_form, execution)
+			return handler(form, scope, eval_expanded_form_direct, execution)
 		end
 	end
 
-	local callable = eval_form(form.items[1], scope, execution)
+	local callable = eval_form_direct(form.items[1], scope, execution)
 	local args = {}
 
 	for index = 2, #form.items do
-		args[index - 1] = eval_form(form.items[index], scope, execution)
+		args[index - 1] = eval_form_direct(form.items[index], scope, execution)
 	end
 
-	return apply_callable(callable, args, execution)
+	return apply_callable_direct(callable, args, execution)
 end
 
 local function register_special_form(name, handler)
@@ -2026,6 +2060,7 @@ register_special_form("lambda", function(form, scope)
 	return value.closure(bind.parse_param_spec(form.items[2]), body, scope, {
 		needs_cps = body_needs_cps(body),
 		preexpand_body = body_allows_preexpand(body),
+		expanded_body = body_allows_preexpand(body) and cached_expanded_body(body, scope) or nil,
 	})
 end)
 
@@ -2051,6 +2086,7 @@ register_special_form("case-lambda", function(form, scope)
 			body = body,
 			needs_cps = body_needs_cps(body),
 			preexpand_body = body_allows_preexpand(body),
+			expanded_body = body_allows_preexpand(body) and cached_expanded_body(body, scope) or nil,
 		}
 	end
 
@@ -2068,9 +2104,9 @@ register_special_form("case-lambda", function(form, scope)
 
 			if matches then
 				local clause_scope = bind.bind_args(scope, clause.param_spec, args)
-				local expanded_body
+				local expanded_body = clause.expanded_body
 
-				if clause.preexpand_body then
+				if clause.preexpand_body and expanded_body == nil then
 					expanded_body = {}
 
 					for body_index, body_form in ipairs(clause.body) do
@@ -3304,10 +3340,11 @@ register_special_form("set!", function(form, scope, eval_form_impl, execution)
 	return env.set(scope, target.name, item)
 end)
 
-local apply_callable_direct = apply_callable
-local eval_sequence_direct = eval_sequence
-local eval_form_direct = eval_form
-local eval_expanded_form_direct = eval_expanded_form
+apply_callable_direct = apply_callable
+eval_sequence_direct = eval_sequence
+eval_form_direct = eval_form
+eval_expanded_form_direct = eval_expanded_form
+eval_expanded_sequence_direct = eval_expanded_sequence
 
 local function register_special_form_cps(name, handler)
 	special_forms_cps[name] = handler
@@ -3436,10 +3473,14 @@ function apply_callable_cps(callable, args, execution, k)
 		end
 
 		if callable.preexpand_body then
-			local expanded_body = {}
+			local expanded_body = callable.expanded_body
 
-			for index, form in ipairs(body_forms) do
-				expanded_body[index] = expand.form(form, body_scope)
+			if expanded_body == nil then
+				expanded_body = {}
+
+				for index, form in ipairs(body_forms) do
+					expanded_body[index] = expand.form(form, body_scope)
+				end
 			end
 
 			return eval_expanded_sequence_cps(expanded_body, body_scope, execution, k)
@@ -4027,9 +4068,9 @@ register_special_form_cps("case-lambda", function(form, scope, _, k)
 
 			if matches then
 				local clause_scope = bind.bind_args(scope, clause.param_spec, args)
-				local expanded_body
+				local expanded_body = clause.expanded_body
 
-				if clause.preexpand_body then
+				if clause.preexpand_body and expanded_body == nil then
 					expanded_body = {}
 
 					for body_index, body_form in ipairs(clause.body) do
@@ -5081,6 +5122,7 @@ function evaluator.new_execution(options)
 
 	return {
 		cancelled = false,
+		engine = options.engine or "interp",
 		step_budget = options.step_budget,
 		yield_every = options.yield_every,
 		on_yield = options.on_yield,
@@ -5120,6 +5162,23 @@ end
 function evaluator.eval_form(form, scope, execution)
 	local run_execution = attach_execution_helpers(execution or evaluator.new_execution())
 	run_execution.dialect = scope ~= nil and scope.dialect or run_execution.dialect
+	local dialect = run_execution.dialect or "scheme"
+
+	if dialect == "scheme" and (run_execution.engine == "auto" or run_execution.engine == "vm") then
+		local expanded = expand.form(form, scope)
+
+		if not form_needs_cps(expanded) then
+			local chunk = vm.try_compile_form(expanded, scope)
+
+			if chunk.compiled ~= false then
+				return vm.run_chunk(chunk, scope, run_execution, apply_callable_direct)
+			end
+		end
+
+		if run_execution.engine == "vm" then
+			errors.raise("unsupported", "form is not supported by the Scheme VM")
+		end
+	end
 
 	if form_needs_cps(form) then
 		return run_cps(run_execution, function(k)
@@ -5133,9 +5192,30 @@ end
 function evaluator.eval_source(source, scope, execution)
 	local run_execution = attach_execution_helpers(execution or evaluator.new_execution())
 	run_execution.dialect = scope ~= nil and scope.dialect or run_execution.dialect
+	local dialect = scope ~= nil and scope.dialect or "scheme"
 	local forms = reader.read_all(source, {
-		dialect = scope ~= nil and scope.dialect or "scheme",
+		dialect = dialect,
 	})
+
+	if dialect == "scheme" and (run_execution.engine == "auto" or run_execution.engine == "vm") then
+		local expanded_forms = {}
+
+		for index, form in ipairs(forms) do
+			expanded_forms[index] = expand.form(form, scope)
+		end
+
+		if not body_needs_cps(expanded_forms) then
+			local chunk = vm.try_compile_forms(expanded_forms, scope)
+
+			if chunk.compiled ~= false then
+				return vm.run_chunk(chunk, scope, run_execution, apply_callable_direct)
+			end
+		end
+
+		if run_execution.engine == "vm" then
+			errors.raise("unsupported", "source is not supported by the Scheme VM")
+		end
+	end
 
 	if body_needs_cps(forms) then
 		return run_cps(run_execution, function(k)
@@ -5152,6 +5232,10 @@ end
 
 function evaluator.add_builtins(scope, io_adapter)
 	return builtins.add(scope, io_adapter)
+end
+
+evaluator.apply_callable_direct = function(callable, args, execution)
+	return apply_callable_direct(callable, args, execution)
 end
 
 return evaluator

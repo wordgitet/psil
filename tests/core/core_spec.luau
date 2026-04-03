@@ -501,6 +501,132 @@ function core_spec.run()
 		"print returns the last form result through begin"
 	)
 	assert_mod.equal(captured[1], '"hello" 42', "print writes through adapter")
+	assert_mod.equal(
+		lisp.to_string(
+			lisp.eval(
+				"(begin (define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2))))) (fib 10))",
+				runner.new_env(),
+				lisp.new_execution({
+					engine = "vm",
+				})
+			)
+		),
+		"55",
+		"vm engine runs recursive Scheme code"
+	)
+	assert_mod.equal(
+		lisp.to_string(
+			lisp.eval(
+				"(begin (define (make-counter n) (lambda () (set! n (+ n 1)) n)) (define c (make-counter 0)) (list (c) (c) (c)))",
+				runner.new_env(),
+				lisp.new_execution({
+					engine = "vm",
+				})
+			)
+		),
+		"(1 2 3)",
+		"vm engine preserves mutable closure captures"
+	)
+	assert_mod.equal(
+		lisp.to_string(
+			lisp.run_chunk(
+				lisp.compile(
+					"(begin (define (sum-to n acc) (if (= n 0) acc (sum-to (- n 1) (+ acc n)))) (sum-to 10 0))",
+					runner.new_env()
+				),
+				runner.new_env(),
+				lisp.new_execution({
+					engine = "vm",
+				})
+			)
+		),
+		"55",
+		"compile and run_chunk execute compiled Scheme chunks"
+	)
+	assert_mod.equal(
+		lisp.to_string(
+			lisp.eval(
+				"(begin (define (range n acc) (if (= n 0) acc (range (- n 1) (cons n acc)))) (define xs (range 10 '())) (length (reverse xs)))",
+				runner.new_env(),
+				lisp.new_execution({
+					engine = "vm",
+				})
+			)
+		),
+		"10",
+		"vm engine handles intrinsic cons and numeric comparisons"
+	)
+	assert_mod.equal(
+		lisp.to_string(
+			lisp.eval(
+				"(begin (define x 10) (let ((x 2) (y 3)) (and x y (or #f (+ x y)))))",
+				runner.new_env(),
+				lisp.new_execution({
+					engine = "vm",
+				})
+			)
+		),
+		"5",
+		"vm engine handles let, and, and or"
+	)
+	assert_mod.equal(
+		lisp.to_string(
+			lisp.eval(
+				"(begin (define x 1) (let* ((x (+ x 1)) (y (+ x 2))) (when y (set! x y)) x))",
+				runner.new_env(),
+				lisp.new_execution({
+					engine = "vm",
+				})
+			)
+		),
+		"4",
+		"vm engine handles let* and when with local mutation"
+	)
+	do
+		local chunk = lisp.compile(
+			"(begin (define (sum-to n acc) (if (= n 0) acc (sum-to (- n 1) (+ acc n)))) (sum-to 5 0))",
+			runner.new_env()
+		)
+
+		assert_mod.equal(chunk.compiled, true, "compiled chunks report compiled status")
+		assert_mod.equal(type(chunk.stats.instruction_count), "number", "compiled chunks expose stats")
+	end
+	do
+		local unsupported_chunk = lisp.try_compile(
+			"(letrec ((x 1)) x)",
+			runner.new_env()
+		)
+
+		assert_mod.equal(unsupported_chunk.compiled, false, "unsupported chunks report fallback status")
+		assert_mod.equal(
+			unsupported_chunk.fallback_reason,
+			"unsupported_special_form",
+			"unsupported chunks expose a stable fallback reason"
+		)
+	end
+	do
+		local scope = runner.new_env()
+		lisp.eval("(define chosen (lambda () 1))", scope)
+		local chunk = lisp.compile("(chosen)", scope)
+
+		assert_mod.equal(
+			lisp.to_string(lisp.run_chunk(chunk, scope, lisp.new_execution({
+				engine = "vm",
+			}))),
+			"1",
+			"compiled chunks run against the current global binding"
+		)
+
+		lisp.eval("(define chosen (lambda () 2))", scope)
+
+		assert_mod.equal(
+			lisp.to_string(lisp.run_chunk(chunk, scope, lisp.new_execution({
+				engine = "vm",
+			}))),
+			"2",
+			"compiled global caches observe redefined globals"
+		)
+	end
 
 	assert_mod.errors(function()
 		lisp.parse("(+ 1 2")

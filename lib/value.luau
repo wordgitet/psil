@@ -249,6 +249,9 @@ function value.closure(params, body, env, options)
 		env = env,
 		needs_cps = options.needs_cps == true,
 		preexpand_body = options.preexpand_body == true,
+		expanded_body = options.expanded_body,
+		vm_chunk = options.vm_chunk,
+		vm_captures = options.vm_captures,
 	}
 end
 
