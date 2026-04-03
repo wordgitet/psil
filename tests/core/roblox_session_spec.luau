@@ -86,6 +86,22 @@ function roblox_session_spec.run()
 
 	cl_workspace:reset()
 	assert_mod.equal(cl_workspace:get_env().dialect, "cl-compat", "reset preserves the active session dialect")
+
+	ok, result = workspace:eval_line("(defun fib (n) n)")
+	assert_mod.equal(ok, false, "scheme session rejects obvious CL definitions")
+	assert_mod.equal(
+		errors.format(result),
+		"dialect: this looks like Common Lisp code, but the current session is in Scheme mode; hint: switch to CL mode (defun)",
+		"scheme session surfaces a helpful CL mismatch hint"
+	)
+
+	ok, result = cl_workspace:eval_line("(define x 1)")
+	assert_mod.equal(ok, false, "CL session rejects obvious Scheme definitions")
+	assert_mod.equal(
+		errors.format(result),
+		"dialect: this looks like Scheme code, but the current session is in Common Lisp mode; hint: switch to Scheme mode (define)",
+		"CL session surfaces a helpful Scheme mismatch hint"
+	)
 end
 
 return roblox_session_spec

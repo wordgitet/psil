@@ -3,6 +3,7 @@ SPDX-License-Identifier: MPL-2.0
 ]]
 
 local errors = require("../lib/errors")
+local dialect_hint = require("../lib/dialect_hint")
 local lisp = require("../lib/lisp")
 local reader = require("../lib/reader")
 local runner = require("./runner")
@@ -59,17 +60,23 @@ function repl.run(options)
 			if reader.is_complete(buffer, {
 				dialect = dialect,
 			}) then
-				local ok, result =
-					pcall(runner.eval_source, buffer, env, opts.io_adapter)
+				local hint = dialect_hint.build_error(buffer, dialect, "host")
 
-				if ok then
-					write_line(lisp.to_string(result, {
-						dialect = dialect,
-					}))
+				if hint ~= nil then
+					write_line(string.format("error: %s", errors.message(hint)))
 				else
-					write_line(
-						string.format("error: %s", errors.message(result))
-					)
+					local ok, result =
+						pcall(runner.eval_source, buffer, env, opts.io_adapter)
+
+					if ok then
+						write_line(lisp.to_string(result, {
+							dialect = dialect,
+						}))
+					else
+						write_line(
+							string.format("error: %s", errors.message(result))
+						)
+					end
 				end
 
 				buffer = ""

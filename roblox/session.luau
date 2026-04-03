@@ -3,6 +3,7 @@ SPDX-License-Identifier: MPL-2.0
 ]]
 
 local errors = require("../lib/errors")
+local dialect_hint = require("../lib/dialect_hint")
 local lisp = require("../lib/lisp")
 local roblox_io = require("./io")
 
@@ -94,6 +95,13 @@ local function evaluate(self, source, mode)
 
 	if is_blank(source) then
 		return false, nil
+	end
+
+	local mismatch = dialect_hint.build_error(source, self.dialect, "roblox")
+
+	if mismatch ~= nil then
+		emit(self, "error", errors.format(mismatch), mode == "buffer" and "editor" or "repl")
+		return false, mismatch
 	end
 
 	local execution = new_execution(self)

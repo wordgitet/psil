@@ -19,6 +19,8 @@ local function read_file(path)
 	return source
 end
 
+runner.read_file = read_file
+
 function runner.new_env(io_adapter, options)
 	local scope = lisp.new_env(nil, options)
 	lisp.add_builtins(scope, io_adapter or host_io.new())

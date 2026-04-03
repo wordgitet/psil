@@ -90,6 +90,53 @@ function repl_spec.run()
 
 	assert_mod.equal(cl_prompts[1], "cl> ", "repl uses the CL prompt in cl-compat mode")
 	assert_mod.equal(cl_outputs[1], "t", "cl-compat repl prints CL truth values")
+
+	local mismatch_outputs = {}
+	local mismatch_index = 0
+	local mismatch_inputs = {
+		"(defun fib (n) n)",
+		nil,
+	}
+
+	repl.run({
+		read_line = function()
+			mismatch_index = mismatch_index + 1
+			return mismatch_inputs[mismatch_index]
+		end,
+		write_line = function(text)
+			table.insert(mismatch_outputs, text)
+		end,
+	})
+
+	assert_mod.equal(
+		mismatch_outputs[1],
+		"error: this looks like Common Lisp code, but the current session is in Scheme mode; hint: restart with --cl",
+		"repl surfaces a CL hint when CL code is entered in Scheme mode"
+	)
+
+	local reverse_mismatch_outputs = {}
+	local reverse_mismatch_index = 0
+	local reverse_mismatch_inputs = {
+		"(define x 1)",
+		nil,
+	}
+
+	repl.run({
+		dialect = "cl-compat",
+		read_line = function()
+			reverse_mismatch_index = reverse_mismatch_index + 1
+			return reverse_mismatch_inputs[reverse_mismatch_index]
+		end,
+		write_line = function(text)
+			table.insert(reverse_mismatch_outputs, text)
+		end,
+	})
+
+	assert_mod.equal(
+		reverse_mismatch_outputs[1],
+		"error: this looks like Scheme code, but the current session is in Common Lisp mode; hint: restart without --cl",
+		"repl surfaces a Scheme hint when Scheme code is entered in CL mode"
+	)
 end
 
 return repl_spec
