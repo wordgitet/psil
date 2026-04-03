@@ -41,7 +41,7 @@ end
 local script_path = arg[0]
 local root = normalize(dirname(script_path) .. "/..")
 local loader = dofile(root .. "/tools/loader.lua")
-local require_from_tool = loader.make_require(root .. "/tools/ansi_cl_suite.lua")
+local require_from_tool = loader.make_require(root .. "/tools/ansi_cl_clos_suite.lua")
 local suite_runner = require_from_tool("./ansi_cl_suite")
 
-suite_runner.run(arg)
+suite_runner.run_profile("clos", arg)

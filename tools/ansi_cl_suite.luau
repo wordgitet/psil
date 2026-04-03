@@ -5,28 +5,13 @@ SPDX-License-Identifier: MPL-2.0
 local errors = require("../lib/errors")
 local env = require("../lib/env")
 local lisp = require("../lib/lisp")
+local profiles = require("./ansi_cl_profiles")
 local runner = require("../host/runner")
 local value = require("../lib/value")
 
 local suite_runner = {}
 
 local DEFAULT_VENDORED_ROOT = "tests/upstream/ansi-cl"
-local DEFAULT_FILES = {
-	"data-and-control-flow/nil.lsp",
-	"data-and-control-flow/t.lsp",
-	"data-and-control-flow/if.lsp",
-	"data-and-control-flow/progn.lsp",
-	"data-and-control-flow/and.lsp",
-	"data-and-control-flow/or.lsp",
-	"data-and-control-flow/when.lsp",
-	"data-and-control-flow/unless.lsp",
-	"data-and-control-flow/let.lsp",
-	"data-and-control-flow/letstar.lsp",
-	"data-and-control-flow/defparameter.lsp",
-	"data-and-control-flow/defvar.lsp",
-	"data-and-control-flow/defun.lsp",
-}
-
 local function file_exists(path)
 	local handle = io.open(path, "r")
 
@@ -507,11 +492,45 @@ local function classify_failure(err)
 	return "assertion_failure", message
 end
 
-local function collect_targets(root, args)
-	if #args == 0 then
+local function resolve_profile(args, default_profile)
+	local remaining = {}
+	local profile = default_profile or "core"
+	local index = 1
+
+	while index <= #args do
+		local current = args[index]
+
+		if current == "--profile" then
+			local selected = args[index + 1]
+
+			if selected == nil or selected == "" then
+				error("missing profile name after --profile", 0)
+			end
+
+			profile = selected
+			index = index + 2
+		else
+			remaining[#remaining + 1] = current
+			index = index + 1
+		end
+	end
+
+	return profile, remaining
+end
+
+local function collect_targets(root, args, default_profile)
+	local profile, remaining = resolve_profile(args, default_profile)
+
+	if #remaining == 0 then
+		local selected_files = profiles[profile]
+
+		if selected_files == nil then
+			error(string.format("unknown ANSI CL profile '%s'", profile), 0)
+		end
+
 		local targets = {}
 
-		for _, relative in ipairs(DEFAULT_FILES) do
+		for _, relative in ipairs(selected_files) do
 			targets[#targets + 1] = root .. "/" .. relative
 		end
 
@@ -520,7 +539,7 @@ local function collect_targets(root, args)
 
 	local targets = {}
 
-	for _, arg in ipairs(args) do
+	for _, arg in ipairs(remaining) do
 		local candidate = arg
 
 		if string.sub(candidate, 1, #root) ~= root and string.sub(candidate, 1, 1) ~= "/" then
@@ -533,7 +552,13 @@ local function collect_targets(root, args)
 	return targets
 end
 
-function suite_runner.run(args)
+function suite_runner.run(args, options)
+	local default_profile = "core"
+
+	if type(options) == "table" and type(options.default_profile) == "string" then
+		default_profile = options.default_profile
+	end
+
 	local root = suite_root()
 
 	if not file_exists(root .. "/README") then
@@ -558,7 +583,7 @@ function suite_runner.run(args)
 	local sample_failures = {}
 	local seen_expectations = {}
 
-	for _, path in ipairs(collect_targets(root, args or {})) do
+	for _, path in ipairs(collect_targets(root, args or {}, default_profile)) do
 		local relative = string.gsub(path, "^" .. root .. "/", "")
 		local source = read_file(path)
 
@@ -753,4 +778,10 @@ function suite_runner.run(args)
 	end
 end
 
-return suite_runner.run({ ... })
+function suite_runner.run_profile(profile, args)
+	return suite_runner.run(args, {
+		default_profile = profile,
+	})
+end
+
+return suite_runner
