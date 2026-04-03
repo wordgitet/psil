@@ -46,6 +46,13 @@ local suite_registry = {
 		end,
 	},
 	{
+		id = "cl_ansi_core",
+		kind = "curated",
+		load = function()
+			return require("./curated/suites/cl_ansi_core_spec")
+		end,
+	},
+	{
 		id = "r5rs_subset",
 		kind = "curated",
 		load = function()

@@ -182,10 +182,12 @@ local function read_bar_symbol(source, start_index)
 	errors.raise("parse", "unexpected end of input in symbol literal")
 end
 
-function reader.tokenize(source)
+function reader.tokenize(source, options)
 	local tokens = {}
 	local index = 1
 	local fold_case = false
+	local opts = options or {}
+	local dialect = opts.dialect or "scheme"
 
 	-- Reader-level directives and comments are handled here so the parser can
 	-- stay oblivious to whitespace, #; datum comments, and fold-case toggles.
@@ -241,6 +243,9 @@ function reader.tokenize(source)
 		elseif char == "'" then
 			push_token("quote", char, index, index)
 			index = index + 1
+		elseif string.sub(source, index, index + 1) == "#'" then
+			push_token("function_quote", "#'", index, index + 1)
+			index = index + 2
 		elseif char == "`" then
 			push_token("quasiquote", char, index, index)
 			index = index + 1
@@ -289,6 +294,8 @@ function reader.tokenize(source)
 
 			if fold_case then
 				atom = string.lower(atom)
+			elseif dialect == "cl-compat" then
+				atom = string.lower(atom)
 			end
 
 			push_token("atom", atom, start_index, index - 1)
@@ -298,16 +305,16 @@ function reader.tokenize(source)
 	return tokens
 end
 
-function reader.read(source)
-	return parser.parse(reader.tokenize(source))
+function reader.read(source, options)
+	return parser.parse(reader.tokenize(source, options), options)
 end
 
-function reader.read_all(source)
-	return parser.parse_all(reader.tokenize(source))
+function reader.read_all(source, options)
+	return parser.parse_all(reader.tokenize(source, options), options)
 end
 
-function reader.is_complete(source)
-	local ok, err = pcall(reader.read_all, source)
+function reader.is_complete(source, options)
+	local ok, err = pcall(reader.read_all, source, options)
 
 	if ok then
 		return true

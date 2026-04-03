@@ -4,6 +4,7 @@ SPDX-License-Identifier: MPL-2.0
 
 local assert_mod = require("../support/assert")
 local errors = require("../../lib/errors")
+local lisp = require("../../lib/lisp")
 local session = require("../../roblox/session")
 
 local roblox_session_spec = {}
@@ -66,6 +67,25 @@ function roblox_session_spec.run()
 	)
 	assert_mod.equal(cancelled:is_running(), false, "session is not left running")
 	assert_mod.equal(cancelled:is_stopping(), false, "session clears stopping state after interrupt")
+
+	local cl_workspace = session.new(nil, {
+		dialect = "cl-compat",
+	})
+
+	assert_mod.equal(cl_workspace:get_env().dialect, "cl-compat", "session honors an explicit CL dialect")
+	ok, result = cl_workspace:eval_line("t")
+	assert_mod.truthy(ok, "CL session evaluates CL reader forms")
+	assert_mod.equal(result, true, "CL truth symbol evaluates to true")
+	assert_mod.equal(
+		lisp.to_string(result, {
+			dialect = "cl-compat",
+		}),
+		"t",
+		"CL session results print with CL formatting"
+	)
+
+	cl_workspace:reset()
+	assert_mod.equal(cl_workspace:get_env().dialect, "cl-compat", "reset preserves the active session dialect")
 end
 
 return roblox_session_spec

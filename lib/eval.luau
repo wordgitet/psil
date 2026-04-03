@@ -21,6 +21,31 @@ local value = require("./value")
 local evaluator = {}
 local special_forms = {}
 local special_forms_cps = {}
+local install_syntax_callable_wrappers
+local setq_like
+local cl_only_special_forms = {
+	block = true,
+	decf = true,
+	declare = true,
+	defparameter = true,
+	defvar = true,
+	dolist = true,
+	flet = true,
+	["function"] = true,
+	go = true,
+	["ignore-errors"] = true,
+	incf = true,
+	locally = true,
+	loop = true,
+	macrolet = true,
+	prog = true,
+	["return-from"] = true,
+	["return"] = true,
+	["signals-error"] = true,
+	setf = true,
+	setq = true,
+	tagbody = true,
+}
 local eval_expanded_form
 local eval_form
 local eval_expanded_form_cps
@@ -145,34 +170,55 @@ local function apply_callable(callable, args, execution)
 	end
 
 	if value.is_closure(callable) then
-		local call_scope = bind.bind_args(callable.env, callable.param_spec, args)
+		local call_scope
+
+		if callable.param_spec.keywords ~= nil and callable.param_spec.keywords.cl then
+			call_scope = bind.bind_cl_args(callable.env, callable.param_spec, args, eval_form, execution)
+		else
+			call_scope = bind.bind_args(callable.env, callable.param_spec, args)
+		end
 
 		-- Closures can stay on the simpler direct path when their bodies do not
 		-- need continuation-aware evaluation. Pre-expanding once per call keeps
 		-- local macro definitions visible without re-expanding each form later.
+		local body_scope = call_scope
+		local body_forms = callable.body
+
+		if cl_compat_enabled(call_scope, execution) then
+			local stripped_body, special_names = collect_special_names(callable.body, 1)
+
+			if next(special_names) ~= nil then
+				body_scope = env.new(call_scope)
+				env.mark_specials(body_scope, special_names)
+				body_forms = stripped_body
+			elseif #stripped_body ~= #callable.body then
+				body_forms = stripped_body
+			end
+		end
+
 		if callable.preexpand_body then
 			local expanded_body = {}
 
-			for index, form in ipairs(callable.body) do
-				expanded_body[index] = expand.form(form, call_scope)
+			for index, form in ipairs(body_forms) do
+				expanded_body[index] = expand.form(form, body_scope)
 			end
 
 			if callable.needs_cps then
 				return run_cps(execution, function(k)
-					return eval_expanded_sequence_cps(expanded_body, call_scope, execution, k)
+					return eval_expanded_sequence_cps(expanded_body, body_scope, execution, k)
 				end)
 			end
 
-			return eval_expanded_sequence(expanded_body, call_scope, execution)
+			return eval_expanded_sequence(expanded_body, body_scope, execution)
 		end
 
 		if callable.needs_cps then
 			return run_cps(execution, function(k)
-				return eval_sequence_cps(callable.body, call_scope, execution, k)
+				return eval_sequence_cps(body_forms, body_scope, execution, k)
 			end)
 		end
 
-		return eval_sequence(callable.body, call_scope, eval_form, execution)
+		return eval_sequence(body_forms, body_scope, eval_form, execution)
 	end
 
 	errors.raise("type", "attempted to call a non-function value")
@@ -315,7 +361,757 @@ local function lookup_binding(scope, symbol)
 	return frame.values[symbol.name]
 end
 
-local function install_syntax_callable_wrappers(target_scope, definition_scope)
+local function cl_compat_enabled(scope, execution)
+	if scope ~= nil and scope.dialect == "cl-compat" then
+		return true
+	end
+
+	if execution ~= nil and execution.dialect == "cl-compat" then
+		return true
+	end
+
+	return false
+end
+
+local function current_special_binding(execution, name)
+	local bindings = execution ~= nil and execution.cl_special_bindings or nil
+	local stack = bindings ~= nil and bindings[name] or nil
+
+	if stack ~= nil and #stack > 0 then
+		return stack[#stack], true
+	end
+
+	return nil, false
+end
+
+local function with_special_bindings(execution, bindings, fn)
+	if execution == nil or #bindings == 0 then
+		return fn()
+	end
+
+	execution.cl_special_bindings = execution.cl_special_bindings or {}
+
+	for _, binding in ipairs(bindings) do
+		local stack = execution.cl_special_bindings[binding.name]
+
+		if stack == nil then
+			stack = {}
+			execution.cl_special_bindings[binding.name] = stack
+		end
+
+		stack[#stack + 1] = binding.value
+	end
+
+	local ok, result = pcall(fn)
+
+	for index = #bindings, 1, -1 do
+		local name = bindings[index].name
+		local stack = execution.cl_special_bindings[name]
+
+		if stack ~= nil then
+			stack[#stack] = nil
+
+			if #stack == 0 then
+				execution.cl_special_bindings[name] = nil
+			end
+		end
+	end
+
+	if ok then
+		return result
+	end
+
+	error(result, 0)
+end
+
+local function resolve_special_value(scope, name, execution)
+	local bound, ok = current_special_binding(execution, name)
+
+	if ok then
+		return bound
+	end
+
+	local root = env.root(scope)
+
+	if root ~= nil and root.values[name] ~= nil then
+		return env.get(root, name)
+	end
+
+	return env.get(scope, name)
+end
+
+local function use_special_lookup(scope, name, execution)
+	return cl_compat_enabled(scope, execution)
+		and (env.has_special(scope, name) or env.is_global_special(scope, name))
+end
+
+local function collect_special_names(items, start_index)
+	local special_names = {}
+	local ordered = {}
+	local index = start_index
+
+	while index <= #items do
+		local item = items[index]
+
+		if not (value.is_list(item) and value.is_symbol(item.items[1]) and item.items[1].name == "declare") then
+			break
+		end
+
+		for declare_index = 2, #item.items do
+			local spec = item.items[declare_index]
+
+			if value.is_list(spec) and value.is_symbol(spec.items[1]) and spec.items[1].name == "special" then
+				for symbol_index = 2, #spec.items do
+					local symbol = spec.items[symbol_index]
+
+					if value.is_symbol(symbol) and not special_names[symbol.name] then
+						special_names[symbol.name] = true
+						ordered[#ordered + 1] = symbol.name
+					end
+				end
+			end
+		end
+
+		index = index + 1
+	end
+
+	local body = {}
+
+	for body_index = index, #items do
+		body[#body + 1] = items[body_index]
+	end
+
+	return body, special_names, ordered
+end
+
+local function add_global_special_bindings(scope, special_names, ordered_names, bindings_form)
+	for _, binding in ipairs(bindings_form.items) do
+		if value.is_list(binding) and value.is_symbol(binding.items[1]) then
+			local name = binding.items[1].name
+
+			if env.is_global_special(scope, name) and not special_names[name] then
+				special_names[name] = true
+				ordered_names[#ordered_names + 1] = name
+			end
+		end
+	end
+end
+
+local function make_special_binding_list(names, values_by_name)
+	local bindings = {}
+
+	for _, name in ipairs(names) do
+		if values_by_name[name] ~= nil then
+			bindings[#bindings + 1] = {
+				name = name,
+				value = values_by_name[name],
+			}
+		end
+	end
+
+	return bindings
+end
+
+local function cl_setter_name(target)
+	return string.format("(setf %s)", target)
+end
+
+local function closure_simple_place(closure)
+	if not value.is_closure(closure) then
+		return nil
+	end
+
+	if closure.param_spec.keywords ~= nil and closure.param_spec.keywords.cl then
+		return nil
+	end
+
+	local fixed = closure.param_spec.fixed or {}
+
+	if #fixed ~= 1 or closure.param_spec.rest ~= nil then
+		return nil
+	end
+
+	local body = closure.body
+
+	if #body == 1
+		and value.is_list(body[1])
+		and value.is_symbol(body[1].items[1])
+		and body[1].items[1].name == "block" then
+		local block_items = {}
+
+		for index = 3, #body[1].items do
+			block_items[#block_items + 1] = body[1].items[index]
+		end
+
+		body = block_items
+	end
+
+	if #body ~= 1 then
+		return nil
+	end
+
+	local form = body[1]
+
+	if not value.is_list(form)
+		or #form.items ~= 2
+		or not value.is_symbol(form.items[1])
+		or not value.is_symbol(form.items[2]) then
+		return nil
+	end
+
+	if form.items[2].name ~= fixed[1] then
+		return nil
+	end
+
+	local head_name = form.items[1].name
+
+	if head_name == "car" or head_name == "cdr" then
+		return head_name
+	end
+
+	return nil
+end
+
+local function is_truthy_for_mode(item, scope, execution)
+	if value.is_multi_values(item) then
+		if #item.items == 0 then
+			item = value.list({})
+		else
+			item = item.items[1]
+		end
+	end
+
+	if cl_compat_enabled(scope, execution) then
+		return item ~= false and not (value.is_list(item) and #item.items == 0 and item.tail == nil)
+	end
+
+	return value.is_truthy(item)
+end
+
+local function primary_value(item)
+	if value.is_multi_values(item) then
+		if #item.items == 0 then
+			return value.list({})
+		end
+
+		return item.items[1]
+	end
+
+	return item
+end
+
+local function is_cl_keyword_symbol(item, scope, execution)
+	return cl_compat_enabled(scope, execution)
+		and value.is_symbol(item)
+		and string.sub(item.name, 1, 1) == ":"
+end
+
+local function cl_function_name(item)
+	if value.is_symbol(item) then
+		return item.name, item
+	end
+
+	if value.is_list(item)
+		and #item.items == 2
+		and value.is_symbol(item.items[1])
+		and item.items[1].name == "setf"
+		and value.is_symbol(item.items[2]) then
+		return cl_setter_name(item.items[2].name), item.items[2]
+	end
+
+	return nil, nil
+end
+
+local function find_block_frame(execution, name)
+	local blocks = execution.cl_blocks
+
+	if blocks == nil then
+		return nil
+	end
+
+	for index = #blocks, 1, -1 do
+		local frame = blocks[index]
+
+		if frame.name == name then
+			return frame
+		end
+	end
+
+	return nil
+end
+
+local function datum_tag_key(item)
+	if value.is_symbol(item) then
+		return "sym:" .. item.name
+	end
+
+	if type(item) == "number" then
+		return "num:" .. tostring(item)
+	end
+
+	return nil
+end
+
+local function find_tagbody_frame(execution, tag_item)
+	local tagbodies = execution.cl_tagbodies
+	local key = datum_tag_key(tag_item)
+
+	if tagbodies == nil or key == nil then
+		return nil
+	end
+
+	for index = #tagbodies, 1, -1 do
+		local frame = tagbodies[index]
+
+		if frame.tags[key] ~= nil then
+			return frame, key
+		end
+	end
+
+	return nil
+end
+
+local function with_block_frame(execution, name, token, fn)
+	execution.cl_blocks = execution.cl_blocks or {}
+	execution.cl_blocks[#execution.cl_blocks + 1] = {
+		name = name,
+		token = token,
+	}
+
+	local ok, result = pcall(fn)
+	table.remove(execution.cl_blocks)
+
+	if ok then
+		return result
+	end
+
+	if type(result) == "table" and result.kind == "block_return" and result.token == token then
+		return result.value
+	end
+
+	error(result, 0)
+end
+
+local function with_block_frame_cps(execution, name, token, fn, k)
+	execution.cl_blocks = execution.cl_blocks or {}
+	execution.cl_blocks[#execution.cl_blocks + 1] = {
+		name = name,
+		token = token,
+	}
+
+	local ok, result = pcall(fn)
+	table.remove(execution.cl_blocks)
+
+	if ok then
+		return result
+	end
+
+	if type(result) == "table" and result.kind == "block_return" and result.token == token then
+		return k(result.value)
+	end
+
+	error(result, 0)
+end
+
+local function cl_numeric_delta(name, item)
+	if type(item) ~= "number" then
+		errors.raise("type", string.format("%s expected numeric values", name))
+	end
+
+	return item
+end
+
+local function cl_block_name(item)
+	if value.is_symbol(item) then
+		return item.name
+	end
+
+	if value.is_list(item) and #item.items == 0 and item.tail == nil then
+		return "nil"
+	end
+
+	return nil
+end
+
+local function eval_cl_local_function_form(form, scope, eval_form_impl, execution)
+	expect_form_count(form.items[1].name, form.items, 2)
+
+	local bindings_form = form.items[2]
+
+	if not value.is_list(bindings_form) then
+		errors.raise("type", string.format("%s bindings must be a list", form.items[1].name))
+	end
+
+	local local_scope = env.new(scope)
+
+	for _, binding in ipairs(bindings_form.items) do
+		if not value.is_list(binding) or #binding.items < 2 or not value.is_symbol(binding.items[1]) then
+			errors.raise("type", string.format("%s bindings must be (name formals body...) lists", form.items[1].name))
+		end
+
+		local lambda_items = {
+			value.symbol("lambda"),
+			binding.items[2],
+		}
+
+		for index = 3, #binding.items do
+			lambda_items[#lambda_items + 1] = binding.items[index]
+		end
+
+		local closure = eval_form_impl(value.list(lambda_items), scope, execution)
+		env.define(local_scope, binding.items[1].name, closure)
+	end
+
+	local body = {}
+
+	for index = 3, #form.items do
+		body[#body + 1] = form.items[index]
+	end
+
+	if #body == 0 then
+		errors.raise("arity", string.format("%s expected at least one body form", form.items[1].name))
+	end
+
+		return eval_sequence(body, local_scope, eval_form_impl, execution)
+end
+
+local function eval_cl_local_function_form_cps(form, scope, execution, k)
+	expect_form_count(form.items[1].name, form.items, 2)
+
+	local bindings_form = form.items[2]
+
+	if not value.is_list(bindings_form) then
+		errors.raise("type", string.format("%s bindings must be a list", form.items[1].name))
+	end
+
+	local local_scope = env.new(scope)
+
+	local function install_binding(index)
+		if index > #bindings_form.items then
+			local body = {}
+
+			for body_index = 3, #form.items do
+				body[#body + 1] = form.items[body_index]
+			end
+
+			if #body == 0 then
+				errors.raise("arity", string.format("%s expected at least one body form", form.items[1].name))
+			end
+
+			return eval_sequence_cps(body, local_scope, execution, k)
+		end
+
+		local binding = bindings_form.items[index]
+
+		if not value.is_list(binding) or #binding.items < 2 or not value.is_symbol(binding.items[1]) then
+			errors.raise("type", string.format("%s bindings must be (name formals body...) lists", form.items[1].name))
+		end
+
+		local lambda_items = {
+			value.symbol("lambda"),
+			binding.items[2],
+		}
+
+		for body_index = 3, #binding.items do
+			lambda_items[#lambda_items + 1] = binding.items[body_index]
+		end
+
+		return eval_form_cps(value.list(lambda_items), scope, execution, function(closure)
+			env.define(local_scope, binding.items[1].name, closure)
+			return install_binding(index + 1)
+		end)
+	end
+
+	return install_binding(1)
+end
+
+local function compile_cl_macro(name, binding, scope)
+	local closure_scope = env.new(scope)
+	install_syntax_callable_wrappers(closure_scope, scope)
+
+	local lambda_items = {
+		value.symbol("lambda"),
+		binding.items[2],
+	}
+
+	for index = 3, #binding.items do
+		lambda_items[#lambda_items + 1] = binding.items[index]
+	end
+
+	local closure = evaluator.eval_form(value.list(lambda_items), closure_scope, evaluator.new_execution())
+
+	return value.syntax(name, {
+		kind = "cl_macro",
+		syntax_name = name,
+		definition_scope = scope,
+		closure = closure,
+	})
+end
+
+local function eval_cl_macrolet_form(form, scope, execution)
+	expect_form_count("macrolet", form.items, 2)
+
+	local bindings_form = form.items[2]
+
+	if not value.is_list(bindings_form) then
+		errors.raise("type", "macrolet bindings must be a list")
+	end
+
+	local local_scope = env.new(scope)
+
+	for _, binding in ipairs(bindings_form.items) do
+		if not value.is_list(binding) or #binding.items < 2 or not value.is_symbol(binding.items[1]) then
+			errors.raise("type", "macrolet bindings must be (name lambda-list body...) lists")
+		end
+
+		env.define(local_scope, binding.items[1].name, compile_cl_macro(binding.items[1].name, binding, local_scope))
+	end
+
+	local body = {}
+
+	for index = 3, #form.items do
+		body[#body + 1] = form.items[index]
+	end
+
+	if #body == 0 then
+		errors.raise("arity", "macrolet expected at least one body form")
+	end
+
+		return eval_sequence(body, local_scope, eval_form, execution)
+end
+
+local function eval_cl_macrolet_form_cps(form, scope, execution, k)
+	expect_form_count("macrolet", form.items, 2)
+
+	local bindings_form = form.items[2]
+
+	if not value.is_list(bindings_form) then
+		errors.raise("type", "macrolet bindings must be a list")
+	end
+
+	local local_scope = env.new(scope)
+
+	for _, binding in ipairs(bindings_form.items) do
+		if not value.is_list(binding) or #binding.items < 2 or not value.is_symbol(binding.items[1]) then
+			errors.raise("type", "macrolet bindings must be (name lambda-list body...) lists")
+		end
+
+		env.define(local_scope, binding.items[1].name, compile_cl_macro(binding.items[1].name, binding, local_scope))
+	end
+
+	local body = {}
+
+	for index = 3, #form.items do
+		body[#body + 1] = form.items[index]
+	end
+
+	if #body == 0 then
+		errors.raise("arity", "macrolet expected at least one body form")
+	end
+
+	return eval_sequence_cps(body, local_scope, execution, k)
+end
+
+local function parse_loop_spec(form)
+	local clauses = {}
+	local index = 2
+
+	while index <= #form.items do
+		local head = form.items[index]
+
+		if not value.is_symbol(head) then
+			errors.raise("syntax", "loop expected clause keywords")
+		end
+
+		if head.name == "for" then
+			local var = form.items[index + 1]
+			local mode = form.items[index + 2]
+
+			if not value.is_symbol(var) or not value.is_symbol(mode) then
+				errors.raise("syntax", "loop for clauses must be 'for var ...'")
+			end
+
+			if mode.name == "in" then
+				clauses[#clauses + 1] = {
+					kind = "for_in",
+					name = var.name,
+					source = form.items[index + 3],
+				}
+				index = index + 4
+			elseif mode.name == "below" then
+				clauses[#clauses + 1] = {
+					kind = "for_below",
+					name = var.name,
+					limit = form.items[index + 3],
+				}
+				index = index + 4
+			elseif mode.name == "=" then
+				local clause = {
+					kind = "for_assign",
+					name = var.name,
+					init = form.items[index + 3],
+				}
+
+				index = index + 4
+
+				if index + 1 <= #form.items
+					and value.is_symbol(form.items[index])
+					and form.items[index].name == "then" then
+					clause.step = form.items[index + 1]
+					index = index + 2
+				end
+
+				clauses[#clauses + 1] = clause
+			else
+				errors.raise("syntax", string.format("unsupported loop for mode '%s'", mode.name))
+			end
+		elseif head.name == "when" or head.name == "unless" then
+			local collect_kw = form.items[index + 2]
+
+			if not value.is_symbol(collect_kw) or collect_kw.name ~= "collect" then
+				errors.raise("syntax", "loop only supports when/unless ... collect ...")
+			end
+
+			clauses[#clauses + 1] = {
+				kind = head.name,
+				test = form.items[index + 1],
+				collect = form.items[index + 3],
+			}
+			index = index + 4
+		else
+			errors.raise("syntax", string.format("unsupported loop clause '%s'", head.name))
+		end
+	end
+
+	return clauses
+end
+
+local function eval_loop_clauses(form, scope, eval_form_impl, execution)
+	local clauses = parse_loop_spec(form)
+	local loop_scope = env.new(scope)
+	local states = {}
+	local terminal = nil
+
+	for _, clause in ipairs(clauses) do
+		if clause.kind == "for_in" then
+			local source = eval_form_impl(clause.source, scope, execution)
+
+			if not value.is_list(source) or source.tail ~= nil then
+				errors.raise("type", "loop for ... in expected a proper list")
+			end
+
+			states[#states + 1] = {
+				kind = clause.kind,
+				name = clause.name,
+				items = source.items,
+				index = 1,
+			}
+		elseif clause.kind == "for_below" then
+			states[#states + 1] = {
+				kind = clause.kind,
+				name = clause.name,
+				limit = eval_form_impl(clause.limit, scope, execution),
+				current = 0,
+			}
+			elseif clause.kind == "for_assign" then
+				states[#states + 1] = {
+					kind = clause.kind,
+					name = clause.name,
+					init = clause.init,
+					value = nil,
+					has_value = false,
+					step = clause.step,
+				}
+			else
+			terminal = clause
+		end
+	end
+
+	local results = {}
+
+	while true do
+		local active = true
+
+		for _, state in ipairs(states) do
+			if state.kind == "for_in" then
+				if state.index > #state.items then
+					active = false
+					break
+				end
+
+				setq_like(loop_scope, state.name, state.items[state.index])
+				elseif state.kind == "for_below" then
+				if state.current >= state.limit then
+					active = false
+					break
+				end
+
+					setq_like(loop_scope, state.name, state.current)
+				else
+					if state.step == nil then
+						state.value = eval_form_impl(state.init, loop_scope, execution)
+						state.has_value = true
+					elseif not state.has_value then
+						state.value = eval_form_impl(state.init, loop_scope, execution)
+						state.has_value = true
+					end
+
+					setq_like(loop_scope, state.name, state.value)
+				end
+			end
+
+		if not active then
+			break
+		end
+
+		if terminal ~= nil then
+			local test_value = eval_form_impl(terminal.test, loop_scope, execution)
+			local matches = terminal.kind == "when"
+				and is_truthy_for_mode(test_value, scope, execution)
+				or terminal.kind == "unless"
+					and not is_truthy_for_mode(test_value, scope, execution)
+
+			if matches then
+				setq_like(loop_scope, "it", test_value)
+				local collected
+
+				if value.is_symbol(terminal.collect) and terminal.collect.name == "it" then
+					collected = test_value
+				else
+					collected = eval_form_impl(terminal.collect, loop_scope, execution)
+				end
+
+				results[#results + 1] = collected
+			end
+		end
+
+		for _, state in ipairs(states) do
+			if state.kind == "for_in" then
+				state.index = state.index + 1
+			elseif state.kind == "for_below" then
+				state.current = state.current + 1
+			elseif state.step ~= nil then
+				state.value = eval_form_impl(state.step, loop_scope, execution)
+				state.has_value = true
+			end
+		end
+	end
+
+	return value.list(results)
+end
+
+setq_like = function(scope, name, item)
+	local frame = env.find_frame(scope, name)
+
+	if frame ~= nil then
+		frame.values[name] = item
+		return item
+	end
+
+	return env.define(scope, name, item)
+end
+
+install_syntax_callable_wrappers = function(target_scope, definition_scope)
 	local seen = {}
 	local frame = definition_scope
 
@@ -597,6 +1393,17 @@ function expand_syntax_binding(transformer, form, scope, execution)
 		return resolve_syntactic_closures(expanded)
 	end
 
+	if transformer.kind == "cl_macro" then
+		local args = {}
+
+		for index = 2, #form.items do
+			args[#args + 1] = form.items[index]
+		end
+
+		local expanded = apply_callable(transformer.closure, args, execution)
+		return resolve_syntactic_closures(expanded)
+	end
+
 	errors.raise("syntax", "unsupported macro transformer")
 end
 
@@ -621,15 +1428,21 @@ local function datum_eqv(left, right)
 end
 
 local cps_sensitive_names = {
+	block = true,
 	["call-with-current-continuation"] = true,
 	["call/cc"] = true,
 	["with-exception-handler"] = true,
 	["raise"] = true,
 	["raise-continuable"] = true,
 	["error"] = true,
+	go = true,
 	["guard"] = true,
 	["dynamic-wind"] = true,
 	["parameterize"] = true,
+	prog = true,
+	["return-from"] = true,
+	["return"] = true,
+	tagbody = true,
 }
 
 local function form_needs_cps(form)
@@ -699,7 +1512,15 @@ end
 function eval_expanded_form(form, scope, execution)
 	checkpoint(execution)
 
+	if is_cl_keyword_symbol(form, scope, execution) then
+		return form
+	end
+
 	if value.is_symbol(form) then
+		if use_special_lookup(scope, form.name, execution) then
+			return resolve_special_value(binding_scope(scope, form), form.name, execution)
+		end
+
 		return env.get(binding_scope(scope, form), form.name)
 	end
 
@@ -722,6 +1543,12 @@ function eval_expanded_form(form, scope, execution)
 		end
 
 		local handler = special_forms[head.name]
+
+		if handler ~= nil and binding == nil then
+			if cl_only_special_forms[head.name] and not cl_compat_enabled(scope, execution) then
+				handler = nil
+			end
+		end
 
 		if handler ~= nil and binding == nil then
 			return handler(form, scope, eval_expanded_form, execution)
@@ -858,7 +1685,7 @@ register_special_form("if", function(form, scope, eval_form_impl, execution)
 
 	local condition = eval_form_impl(form.items[2], scope, execution)
 
-	if value.is_truthy(condition) then
+	if is_truthy_for_mode(condition, scope, execution) then
 		return eval_form_impl(form.items[3], scope, execution)
 	end
 
@@ -944,6 +1771,7 @@ register_special_form("guard", function(form, scope, eval_form_impl, execution)
 
 		local test_form = clause.items[1]
 		local matches = false
+		local test_value = nil
 		local test_value = false
 
 		if is_unbound_keyword(clause_scope, test_form, "else") then
@@ -955,7 +1783,7 @@ register_special_form("guard", function(form, scope, eval_form_impl, execution)
 			test_value = condition
 		else
 			test_value = eval_form_impl(test_form, clause_scope, execution)
-			matches = value.is_truthy(test_value)
+			matches = is_truthy_for_mode(test_value, scope, execution)
 		end
 
 		if matches then
@@ -994,8 +1822,12 @@ register_special_form("and", function(form, scope, eval_form_impl, execution)
 	for index = 2, #form.items do
 		result = eval_form_impl(form.items[index], scope, execution)
 
-		if not value.is_truthy(result) then
-			return result
+		if not is_truthy_for_mode(result, scope, execution) then
+			if index == #form.items then
+				return result
+			end
+
+			return primary_value(result)
 		end
 	end
 
@@ -1006,7 +1838,15 @@ register_special_form("or", function(form, scope, eval_form_impl, execution)
 	for index = 2, #form.items do
 		local result = eval_form_impl(form.items[index], scope, execution)
 
-		if value.is_truthy(result) then
+		if is_truthy_for_mode(result, scope, execution) then
+			if index == #form.items then
+				return result
+			end
+
+			return primary_value(result)
+		end
+
+		if index == #form.items then
 			return result
 		end
 	end
@@ -1338,12 +2178,45 @@ local function eval_binding_form(name, form, scope, eval_form_impl, sequential, 
 		return apply_callable(closure, args, execution)
 	end
 
+	local body, special_names, ordered_special_names = collect_special_names(form.items, bindings_index + 1)
+	add_global_special_bindings(scope, special_names, ordered_special_names, bindings_form)
+
+	if #body == 0 then
+		errors.raise("arity", string.format("%s expected at least one body form", name))
+	end
+
 	local let_scope
 
 	if sequential then
 		let_scope = env.new(scope)
+		local special_values = {}
 
-		for _, binding in ipairs(bindings_form.items) do
+		local function bind_next(index)
+			if index > #bindings_form.items then
+				if next(special_names) == nil then
+					return eval_sequence(body, let_scope, eval_form_impl, execution)
+				end
+
+				local body_scope = env.new(let_scope)
+				env.mark_specials(body_scope, special_names)
+
+				for _, special_name in ipairs(ordered_special_names) do
+					if special_values[special_name] ~= nil then
+						body_scope.values[special_name] = nil
+					end
+				end
+
+				return with_special_bindings(
+					execution,
+					make_special_binding_list(ordered_special_names, special_values),
+					function()
+						return eval_sequence(body, body_scope, eval_form_impl, execution)
+					end
+				)
+			end
+
+			local binding = bindings_form.items[index]
+
 			if not value.is_list(binding) or #binding.items ~= 2 then
 				errors.raise("type", string.format("%s bindings must be pairs", name))
 			end
@@ -1358,11 +2231,20 @@ local function eval_binding_form(name, form, scope, eval_form_impl, sequential, 
 			end
 
 			local item = eval_form_impl(binding.items[2], let_scope, execution)
+
+			if special_names[name_form.name] then
+				special_values[name_form.name] = item
+			end
+
 			env.define(let_scope, name_form.name, item)
+			return bind_next(index + 1)
 		end
+
+		return bind_next(1)
 	else
 		local names = {}
 		local values = {}
+		local special_values = {}
 
 		for _, binding in ipairs(bindings_form.items) do
 			if not value.is_list(binding) or #binding.items ~= 2 then
@@ -1379,20 +2261,28 @@ local function eval_binding_form(name, form, scope, eval_form_impl, sequential, 
 			end
 
 			table.insert(names, name_form.name)
-			table.insert(values, eval_form_impl(binding.items[2], scope, execution))
+			local item = eval_form_impl(binding.items[2], scope, execution)
+			table.insert(values, item)
+
+			if special_names[name_form.name] then
+				special_values[name_form.name] = item
+			end
 		end
 
 		let_scope = env.extend(scope, names, values)
-	end
+		env.mark_specials(let_scope, special_names)
 
-	local body = {}
+		for _, special_name in ipairs(ordered_special_names) do
+			let_scope.values[special_name] = nil
+		end
 
-	for index = 3, #form.items do
-		table.insert(body, form.items[index])
-	end
-
-	if #body == 0 then
-		errors.raise("arity", string.format("%s expected at least one body form", name))
+		return with_special_bindings(
+			execution,
+			make_special_binding_list(ordered_special_names, special_values),
+			function()
+				return eval_sequence(body, let_scope, eval_form_impl, execution)
+			end
+		)
 	end
 
 	return eval_sequence(body, let_scope, eval_form_impl, execution)
@@ -1450,7 +2340,7 @@ local function eval_letrec_form(name, form, scope, eval_form_impl, execution)
 end
 
 register_special_form("begin", function(form, scope, eval_form_impl, execution)
-	expect_form_count("begin", form.items, 1)
+	expect_form_count("begin", form.items, 0)
 	local body = {}
 
 	for index = 2, #form.items do
@@ -1480,18 +2370,15 @@ register_special_form("cond", function(form, scope, eval_form_impl, execution)
 
 			matches = true
 		else
-			matches = value.is_truthy(eval_form_impl(test_form, scope, execution))
+			test_value = eval_form_impl(test_form, scope, execution)
+			matches = is_truthy_for_mode(test_value, scope, execution)
 		end
 
 		if matches then
 			if #clause.items == 3
 				and is_unbound_keyword(scope, clause.items[2], "=>") then
-				local test_value
-
 				if is_unbound_keyword(scope, test_form, "else") then
 					test_value = true
-				else
-					test_value = eval_form_impl(test_form, scope, execution)
 				end
 
 				local recipient = eval_form_impl(clause.items[3], scope, execution)
@@ -1501,7 +2388,7 @@ register_special_form("cond", function(form, scope, eval_form_impl, execution)
 			end
 
 			if #clause.items == 1 then
-				errors.raise("arity", "cond clauses must have at least one body form")
+				return test_value
 			end
 
 			local body = {}
@@ -1708,7 +2595,7 @@ register_special_form("do", function(form, scope, eval_form_impl, execution)
 		local loop_scope = env.extend(scope, names, values_now)
 		local done = eval_form_impl(test_clause.items[1], loop_scope, execution)
 
-		if value.is_truthy(done) then
+		if is_truthy_for_mode(done, scope, execution) then
 			if #test_clause.items == 1 then
 				return value.list({})
 			end
@@ -1911,6 +2798,499 @@ register_special_form("letrec-syntax", function(form, scope, eval_form_impl, exe
 	)
 end)
 
+local function assign_setf_place(place, new_value, scope, eval_form_impl, execution)
+	if value.is_symbol(place) then
+		setq_like(scope, place.name, new_value)
+		return new_value
+	end
+
+	if not value.is_list(place) or not value.is_symbol(place.items[1]) then
+		errors.raise("type", "setf expected a symbol or place form")
+	end
+
+	local head_name = place.items[1].name
+
+	if (head_name == "car" or head_name == "cdr") and #place.items == 2 then
+		local cell = eval_form_impl(place.items[2], scope, execution)
+
+		if not value.is_list(cell) or #cell.items == 0 then
+			errors.raise("type", string.format("setf of %s expected a non-empty pair", head_name))
+		end
+
+		if head_name == "car" then
+			cell.items[1] = new_value
+		elseif value.is_list(new_value) then
+			local next_items = {
+				cell.items[1],
+			}
+
+			for _, item in ipairs(new_value.items) do
+				next_items[#next_items + 1] = item
+			end
+
+			cell.items = next_items
+			cell.tail = new_value.tail
+		else
+			cell.items = {
+				cell.items[1],
+			}
+			cell.tail = new_value
+		end
+
+		return new_value
+	end
+
+	local setter
+	local ok, setter_or_error = pcall(function()
+		return env.get(scope, cl_setter_name(head_name))
+	end)
+
+	if ok then
+		setter = setter_or_error
+	else
+		local accessor = env.get(scope, head_name)
+		local simple_place = closure_simple_place(accessor)
+
+		if simple_place ~= nil and #place.items == 2 then
+			local rewritten = value.list({
+				value.symbol(simple_place),
+				place.items[2],
+			})
+
+			return assign_setf_place(rewritten, new_value, scope, eval_form_impl, execution)
+		end
+
+		error(setter_or_error, 0)
+	end
+
+	local args = {
+		new_value,
+	}
+
+	for index = 2, #place.items do
+		args[#args + 1] = eval_form_impl(place.items[index], scope, execution)
+	end
+
+	return apply_callable(setter, args, execution)
+end
+
+register_special_form("defparameter", function(form, scope, eval_form_impl, execution)
+	expect_form_count("defparameter", form.items, 1, 3)
+
+	local target = form.items[2]
+
+	if not value.is_symbol(target) then
+		errors.raise("type", "defparameter expected a symbol name")
+	end
+
+	local item = value.list({})
+
+	if form.items[3] ~= nil then
+		item = eval_form_impl(form.items[3], scope, execution)
+	end
+
+	env.mark_global_special(scope, target.name)
+	env.define(scope, target.name, item)
+
+	if form.items[4] ~= nil then
+		env.set_doc(scope, "variable", target.name, form.items[4])
+	end
+
+	return target
+end)
+
+register_special_form("defvar", function(form, scope, eval_form_impl, execution)
+	expect_form_count("defvar", form.items, 1, 3)
+
+	local target = form.items[2]
+
+	if not value.is_symbol(target) then
+		errors.raise("type", "defvar expected a symbol name")
+	end
+
+	env.mark_global_special(scope, target.name)
+
+	if env.find_frame(scope, target.name) == nil then
+		local item = value.list({})
+
+		if form.items[3] ~= nil then
+			item = eval_form_impl(form.items[3], scope, execution)
+		end
+
+		env.define(scope, target.name, item)
+	end
+
+	if form.items[4] ~= nil then
+		env.set_doc(scope, "variable", target.name, form.items[4])
+	end
+
+	return target
+end)
+
+register_special_form("function", function(form, scope, eval_form_impl, execution)
+	expect_form_count("function", form.items, 1, 1)
+
+	local target = form.items[2]
+	local function_name = cl_function_name(target)
+
+	if function_name ~= nil then
+		return env.get(scope, function_name)
+	end
+
+	return eval_form_impl(target, scope, execution)
+end)
+
+register_special_form("setf", function(form, scope, eval_form_impl, execution)
+	if (#form.items - 1) % 2 ~= 0 then
+		errors.raise("arity", "setf expected place/value pairs")
+	end
+
+	local result = value.list({})
+
+	for index = 2, #form.items, 2 do
+		local new_value = eval_form_impl(form.items[index + 1], scope, execution)
+		result = assign_setf_place(form.items[index], new_value, scope, eval_form_impl, execution)
+	end
+
+	return result
+end)
+
+register_special_form("block", function(form, scope, eval_form_impl, execution)
+	expect_form_count("block", form.items, 1)
+
+	local name = cl_block_name(form.items[2])
+
+	if name == nil then
+		errors.raise("type", "block expected a symbol name or nil")
+	end
+
+	local body = {}
+
+	for index = 3, #form.items do
+		body[#body + 1] = form.items[index]
+	end
+
+	local token = {}
+
+	return with_block_frame(execution, name, token, function()
+		if #body == 0 then
+			return value.list({})
+		end
+
+			return eval_sequence(body, scope, eval_form_impl, execution)
+	end)
+end)
+
+register_special_form("return-from", function(form, scope, eval_form_impl, execution)
+	expect_form_count("return-from", form.items, 1, 2)
+
+	local name = cl_block_name(form.items[2])
+
+	if name == nil then
+		errors.raise("type", "return-from expected a block name symbol or nil")
+	end
+
+	local frame = find_block_frame(execution, name)
+
+	if frame == nil then
+		errors.raise("name", string.format("return-from target '%s' is not active", name))
+	end
+
+	local result = value.list({})
+
+	if form.items[3] ~= nil then
+		result = eval_form_impl(form.items[3], scope, execution)
+	end
+
+	error({
+		kind = "block_return",
+		token = frame.token,
+		value = result,
+	}, 0)
+end)
+
+register_special_form("incf", function(form, scope, eval_form_impl, execution)
+	expect_form_count("incf", form.items, 1, 2)
+
+	local target = form.items[2]
+
+	if not value.is_symbol(target) then
+		errors.raise("type", "incf expected a symbol place")
+	end
+
+	local delta = 1
+
+	if form.items[3] ~= nil then
+		delta = cl_numeric_delta("incf", eval_form_impl(form.items[3], scope, execution))
+	end
+
+	local current = cl_numeric_delta("incf", env.get(scope, target.name))
+	local next_value = current + delta
+	setq_like(scope, target.name, next_value)
+	return next_value
+end)
+
+register_special_form("decf", function(form, scope, eval_form_impl, execution)
+	expect_form_count("decf", form.items, 1, 2)
+
+	local target = form.items[2]
+
+	if not value.is_symbol(target) then
+		errors.raise("type", "decf expected a symbol place")
+	end
+
+	local delta = 1
+
+	if form.items[3] ~= nil then
+		delta = cl_numeric_delta("decf", eval_form_impl(form.items[3], scope, execution))
+	end
+
+	local current = cl_numeric_delta("decf", env.get(scope, target.name))
+	local next_value = current - delta
+	setq_like(scope, target.name, next_value)
+	return next_value
+end)
+
+register_special_form("flet", function(form, scope, eval_form_impl, execution)
+	return eval_cl_local_function_form(form, scope, eval_form_impl, execution)
+end)
+
+register_special_form("macrolet", function(form, scope, eval_form_impl, execution)
+	return eval_cl_macrolet_form(form, scope, execution)
+end)
+
+register_special_form("declare", function()
+	return value.list({})
+end)
+
+register_special_form("locally", function(form, scope, eval_form_impl, execution)
+	expect_form_count("locally", form.items, 0)
+	local body, special_names = collect_special_names(form.items, 2)
+
+	if #body == 0 then
+		return value.list({})
+	end
+
+	if next(special_names) == nil then
+			return eval_sequence(body, scope, eval_form_impl, execution)
+	end
+
+	local local_scope = env.new(scope)
+	env.mark_specials(local_scope, special_names)
+		return eval_sequence(body, local_scope, eval_form_impl, execution)
+end)
+
+register_special_form("tagbody", function(form, scope, eval_form_impl, execution)
+	local tags = {}
+
+	for index = 2, #form.items do
+		local key = datum_tag_key(form.items[index])
+
+		if key ~= nil then
+			tags[key] = index
+		end
+	end
+
+	execution.cl_tagbodies = execution.cl_tagbodies or {}
+	local frame = {
+		tags = tags,
+	}
+	execution.cl_tagbodies[#execution.cl_tagbodies + 1] = frame
+
+	local index = 2
+	local result = value.list({})
+
+	while index <= #form.items do
+		local item = form.items[index]
+
+		if datum_tag_key(item) ~= nil then
+			index = index + 1
+		else
+			local ok, produced = pcall(function()
+				return eval_form_impl(item, scope, execution)
+			end)
+
+			if ok then
+				result = produced
+				index = index + 1
+			elseif type(produced) == "table" and produced.kind == "go_signal" and produced.frame == frame then
+				index = frame.tags[produced.tag]
+
+				if index == nil then
+					table.remove(execution.cl_tagbodies)
+					errors.raise("name", "go target is not active")
+				end
+			else
+				table.remove(execution.cl_tagbodies)
+				error(produced, 0)
+			end
+		end
+	end
+
+	table.remove(execution.cl_tagbodies)
+	return result
+end)
+
+register_special_form("go", function(form, scope, _, execution)
+	expect_form_count("go", form.items, 1, 1)
+
+	local frame, key = find_tagbody_frame(execution, form.items[2])
+
+	if frame == nil or key == nil then
+		errors.raise("name", "go target is not active")
+	end
+
+	error({
+		kind = "go_signal",
+		frame = frame,
+		tag = key,
+	}, 0)
+end)
+
+register_special_form("return", function(form, scope, eval_form_impl, execution)
+	local items = {
+		value.symbol("return-from"),
+		value.list({}),
+	}
+
+	if form.items[2] ~= nil then
+		items[2] = value.symbol("nil")
+		items[3] = form.items[2]
+	else
+		items[2] = value.symbol("nil")
+	end
+
+	return eval_form_impl(value.list(items), scope, execution)
+end)
+
+register_special_form("prog", function(form, scope, eval_form_impl, execution)
+	expect_form_count("prog", form.items, 1)
+
+	local translated = {
+		value.symbol("block"),
+		value.symbol("nil"),
+		value.list({
+			value.symbol("let"),
+			form.items[2],
+			value.list({
+				value.symbol("tagbody"),
+			}),
+		}),
+	}
+
+	for index = 3, #form.items do
+		translated[3].items[3].items[#translated[3].items[3].items + 1] = form.items[index]
+	end
+
+	return eval_form_impl(value.list(translated), scope, execution)
+end)
+
+register_special_form("loop", function(form, scope, eval_form_impl, execution)
+	return eval_loop_clauses(form, scope, eval_form_impl, execution)
+end)
+
+register_special_form("ignore-errors", function(form, scope, eval_form_impl, execution)
+	local body = {}
+
+	for index = 2, #form.items do
+		body[#body + 1] = form.items[index]
+	end
+
+	if #body == 0 then
+		return value.list({})
+	end
+
+	local ok, result = pcall(function()
+			return eval_sequence(body, scope, eval_form_impl, execution)
+	end)
+
+	if ok then
+		return result
+	end
+
+	if errors.is_flow_control(result) then
+		error(result, 0)
+	end
+
+	return value.list({})
+end)
+
+register_special_form("dolist", function(form, scope, eval_form_impl, execution)
+	expect_form_count("dolist", form.items, 2)
+
+	local spec = form.items[2]
+
+	if not value.is_list(spec) or #spec.items < 2 or #spec.items > 3 or not value.is_symbol(spec.items[1]) then
+		errors.raise("type", "dolist expected a (var list [result]) spec")
+	end
+
+	local sequence = eval_form_impl(spec.items[2], scope, execution)
+
+	if not value.is_list(sequence) or sequence.tail ~= nil then
+		errors.raise("type", "dolist expected a proper list")
+	end
+
+	local result_form = spec.items[3]
+	local body = {}
+
+	for index = 3, #form.items do
+		body[#body + 1] = form.items[index]
+	end
+
+	local loop_scope = env.new(scope)
+
+	for _, item in ipairs(sequence.items) do
+		setq_like(loop_scope, spec.items[1].name, item)
+
+		if #body > 0 then
+				eval_sequence(body, loop_scope, eval_form_impl, execution)
+		end
+	end
+
+	setq_like(loop_scope, spec.items[1].name, value.list({}))
+
+	if result_form ~= nil then
+		return eval_form_impl(result_form, loop_scope, execution)
+	end
+
+	return value.list({})
+end)
+
+register_special_form("signals-error", function(form, scope, eval_form_impl, execution)
+	expect_form_count("signals-error", form.items, 2, 2)
+
+	local ok = pcall(function()
+		eval_form_impl(form.items[2], scope, execution)
+	end)
+
+	if ok then
+		return value.list({})
+	end
+
+	return true
+end)
+
+register_special_form("setq", function(form, scope, eval_form_impl, execution)
+	if (#form.items - 1) % 2 ~= 0 then
+		errors.raise("arity", "setq expected name/value pairs")
+	end
+
+	local result = value.list({})
+
+	for index = 2, #form.items, 2 do
+		local target = form.items[index]
+
+		if not value.is_symbol(target) then
+			errors.raise("type", "setq expected symbol names")
+		end
+
+		result = eval_form_impl(form.items[index + 1], scope, execution)
+		setq_like(scope, target.name, result)
+	end
+
+	return result
+end)
+
 register_special_form("set!", function(form, scope, eval_form_impl, execution)
 	expect_form_count("set!", form.items, 2, 2)
 
@@ -2032,19 +3412,40 @@ function apply_callable_cps(callable, args, execution, k)
 	end
 
 	if value.is_closure(callable) then
-		local call_scope = bind.bind_args(callable.env, callable.param_spec, args)
+		local call_scope
+
+		if callable.param_spec.keywords ~= nil and callable.param_spec.keywords.cl then
+			call_scope = bind.bind_cl_args(callable.env, callable.param_spec, args, eval_form, execution)
+		else
+			call_scope = bind.bind_args(callable.env, callable.param_spec, args)
+		end
+
+		local body_scope = call_scope
+		local body_forms = callable.body
+
+		if cl_compat_enabled(call_scope, execution) then
+			local stripped_body, special_names = collect_special_names(callable.body, 1)
+
+			if next(special_names) ~= nil then
+				body_scope = env.new(call_scope)
+				env.mark_specials(body_scope, special_names)
+				body_forms = stripped_body
+			elseif #stripped_body ~= #callable.body then
+				body_forms = stripped_body
+			end
+		end
 
 		if callable.preexpand_body then
 			local expanded_body = {}
 
-			for index, form in ipairs(callable.body) do
-				expanded_body[index] = expand.form(form, call_scope)
+			for index, form in ipairs(body_forms) do
+				expanded_body[index] = expand.form(form, body_scope)
 			end
 
-			return eval_expanded_sequence_cps(expanded_body, call_scope, execution, k)
+			return eval_expanded_sequence_cps(expanded_body, body_scope, execution, k)
 		end
 
-		return eval_sequence_cps(callable.body, call_scope, execution, k)
+		return eval_sequence_cps(body_forms, body_scope, execution, k)
 	end
 
 	errors.raise("type", "attempted to call a non-function value")
@@ -2160,12 +3561,8 @@ local function eval_binding_form_cps(name, form, scope, sequential, execution, k
 		errors.raise("type", string.format("%s bindings must be a list", name))
 	end
 
-	local body_start = bindings_index + 1
-	local body = {}
-
-	for index = body_start, #form.items do
-		body[#body + 1] = form.items[index]
-	end
+	local body, special_names, ordered_special_names = collect_special_names(form.items, bindings_index + 1)
+	add_global_special_bindings(scope, special_names, ordered_special_names, bindings_form)
 
 	if #body == 0 then
 		errors.raise("arity", string.format("%s expected at least one body form", name))
@@ -2211,10 +3608,30 @@ local function eval_binding_form_cps(name, form, scope, sequential, execution, k
 
 	if sequential then
 		local let_scope = env.new(scope)
+		local special_values = {}
 
 		local function bind_next(index)
 			if index > #bindings_form.items then
-				return eval_sequence_cps(body, let_scope, execution, k)
+				if next(special_names) == nil then
+					return eval_sequence_cps(body, let_scope, execution, k)
+				end
+
+				local body_scope = env.new(let_scope)
+				env.mark_specials(body_scope, special_names)
+
+				for _, special_name in ipairs(ordered_special_names) do
+					if special_values[special_name] ~= nil then
+						body_scope.values[special_name] = nil
+					end
+				end
+
+				return with_special_bindings(
+					execution,
+					make_special_binding_list(ordered_special_names, special_values),
+					function()
+						return eval_sequence_cps(body, body_scope, execution, k)
+					end
+				)
 			end
 
 			local binding = bindings_form.items[index]
@@ -2230,6 +3647,10 @@ local function eval_binding_form_cps(name, form, scope, sequential, execution, k
 			end
 
 			return eval_form_cps(binding.items[2], let_scope, execution, function(item)
+				if special_names[name_form.name] then
+					special_values[name_form.name] = item
+				end
+
 				env.define(let_scope, name_form.name, item)
 				return bind_next(index + 1)
 			end)
@@ -2239,11 +3660,24 @@ local function eval_binding_form_cps(name, form, scope, sequential, execution, k
 	end
 
 	local names = {}
+	local special_values = {}
 
 	local function collect_values(index, values_now)
 		if index > #bindings_form.items then
 			local let_scope = env.extend(scope, names, values_now)
-			return eval_sequence_cps(body, let_scope, execution, k)
+			env.mark_specials(let_scope, special_names)
+
+			for _, special_name in ipairs(ordered_special_names) do
+				let_scope.values[special_name] = nil
+			end
+
+			return with_special_bindings(
+				execution,
+				make_special_binding_list(ordered_special_names, special_values),
+				function()
+					return eval_sequence_cps(body, let_scope, execution, k)
+				end
+			)
 		end
 
 		local binding = bindings_form.items[index]
@@ -2260,6 +3694,10 @@ local function eval_binding_form_cps(name, form, scope, sequential, execution, k
 
 		names[#names + 1] = name_form.name
 		return eval_form_cps(binding.items[2], scope, execution, function(item)
+			if special_names[name_form.name] then
+				special_values[name_form.name] = item
+			end
+
 			local next_values = value.copy_items(values_now)
 			next_values[#next_values + 1] = item
 			return collect_values(index + 1, next_values)
@@ -2440,7 +3878,7 @@ end)
 register_special_form_cps("if", function(form, scope, execution, k)
 	expect_form_count("if", form.items, 2, 3)
 	return eval_form_cps(form.items[2], scope, execution, function(condition)
-		if value.is_truthy(condition) then
+		if is_truthy_for_mode(condition, scope, execution) then
 			return eval_form_cps(form.items[3], scope, execution, k)
 		end
 
@@ -2453,7 +3891,7 @@ register_special_form_cps("if", function(form, scope, execution, k)
 end)
 
 register_special_form_cps("begin", function(form, scope, execution, k)
-	expect_form_count("begin", form.items, 1)
+	expect_form_count("begin", form.items, 0)
 	local body = {}
 
 	for index = 2, #form.items do
@@ -2470,8 +3908,12 @@ register_special_form_cps("and", function(form, scope, execution, k)
 		end
 
 		return eval_form_cps(form.items[index], scope, execution, function(item)
-			if not value.is_truthy(item) then
-				return k(item)
+			if not is_truthy_for_mode(item, scope, execution) then
+				if index == #form.items then
+					return k(item)
+				end
+
+				return k(primary_value(item))
 			end
 
 			return iterate(index + 1, item)
@@ -2488,7 +3930,15 @@ register_special_form_cps("or", function(form, scope, execution, k)
 		end
 
 		return eval_form_cps(form.items[index], scope, execution, function(item)
-			if value.is_truthy(item) then
+			if is_truthy_for_mode(item, scope, execution) then
+				if index == #form.items then
+					return k(item)
+				end
+
+				return k(primary_value(item))
+			end
+
+			if index == #form.items then
 				return k(item)
 			end
 
@@ -2693,7 +4143,7 @@ register_special_form_cps("cond", function(form, scope, execution, k)
 		end
 
 		return eval_form_cps(test_form, scope, execution, function(test_value)
-			if not value.is_truthy(test_value) then
+			if not is_truthy_for_mode(test_value, scope, execution) then
 				return check_clause(index + 1)
 			end
 
@@ -2706,7 +4156,7 @@ register_special_form_cps("cond", function(form, scope, execution, k)
 			end
 
 			if #clause.items == 1 then
-				errors.raise("arity", "cond clauses must have at least one body form")
+				return k(test_value)
 			end
 
 			local body = {}
@@ -2798,6 +4248,353 @@ register_special_form_cps("set!", function(form, scope, execution, k)
 	end)
 end)
 
+register_special_form_cps("block", function(form, scope, execution, k)
+	expect_form_count("block", form.items, 1)
+
+	local name = cl_block_name(form.items[2])
+
+	if name == nil then
+		errors.raise("type", "block expected a symbol name or nil")
+	end
+
+	local body = {}
+
+	for index = 3, #form.items do
+		body[#body + 1] = form.items[index]
+	end
+
+	local token = {}
+
+	return with_block_frame_cps(execution, name, token, function()
+		if #body == 0 then
+			return k(value.list({}))
+		end
+
+		return eval_sequence_cps(body, scope, execution, k)
+	end, k)
+end)
+
+register_special_form_cps("return-from", function(form, scope, execution, _)
+	expect_form_count("return-from", form.items, 1, 2)
+
+	local name = cl_block_name(form.items[2])
+
+	if name == nil then
+		errors.raise("type", "return-from expected a block name symbol or nil")
+	end
+
+	local frame = find_block_frame(execution, name)
+
+	if frame == nil then
+		errors.raise("name", string.format("return-from target '%s' is not active", name))
+	end
+
+	local function raise_return(value_now)
+		error({
+			kind = "block_return",
+			token = frame.token,
+			value = value_now,
+		}, 0)
+	end
+
+	if form.items[3] == nil then
+		return raise_return(value.list({}))
+	end
+
+	return eval_form_cps(form.items[3], scope, execution, raise_return)
+end)
+
+register_special_form_cps("incf", function(form, scope, execution, k)
+	expect_form_count("incf", form.items, 1, 2)
+
+	local target = form.items[2]
+
+	if not value.is_symbol(target) then
+		errors.raise("type", "incf expected a symbol place")
+	end
+
+	local function apply_delta(delta)
+		local current = cl_numeric_delta("incf", env.get(scope, target.name))
+		local next_value = current + delta
+		setq_like(scope, target.name, next_value)
+		return k(next_value)
+	end
+
+	if form.items[3] == nil then
+		return apply_delta(1)
+	end
+
+	return eval_form_cps(form.items[3], scope, execution, function(delta)
+		return apply_delta(cl_numeric_delta("incf", delta))
+	end)
+end)
+
+register_special_form_cps("decf", function(form, scope, execution, k)
+	expect_form_count("decf", form.items, 1, 2)
+
+	local target = form.items[2]
+
+	if not value.is_symbol(target) then
+		errors.raise("type", "decf expected a symbol place")
+	end
+
+	local function apply_delta(delta)
+		local current = cl_numeric_delta("decf", env.get(scope, target.name))
+		local next_value = current - delta
+		setq_like(scope, target.name, next_value)
+		return k(next_value)
+	end
+
+	if form.items[3] == nil then
+		return apply_delta(1)
+	end
+
+	return eval_form_cps(form.items[3], scope, execution, function(delta)
+		return apply_delta(cl_numeric_delta("decf", delta))
+	end)
+end)
+
+register_special_form_cps("flet", function(form, scope, execution, k)
+	return eval_cl_local_function_form_cps(form, scope, execution, k)
+end)
+
+register_special_form_cps("macrolet", function(form, scope, execution, k)
+	return eval_cl_macrolet_form_cps(form, scope, execution, k)
+end)
+
+register_special_form_cps("declare", function(_, _, _, k)
+	return k(value.list({}))
+end)
+
+register_special_form_cps("locally", function(form, scope, execution, k)
+	expect_form_count("locally", form.items, 0)
+	local body, special_names = collect_special_names(form.items, 2)
+
+	if #body == 0 then
+		return k(value.list({}))
+	end
+
+	if next(special_names) == nil then
+		return eval_sequence_cps(body, scope, execution, k)
+	end
+
+	local local_scope = env.new(scope)
+	env.mark_specials(local_scope, special_names)
+	return eval_sequence_cps(body, local_scope, execution, k)
+end)
+
+register_special_form_cps("tagbody", function(form, scope, execution, k)
+	local tags = {}
+
+	for index = 2, #form.items do
+		local key = datum_tag_key(form.items[index])
+
+		if key ~= nil then
+			tags[key] = index
+		end
+	end
+
+	execution.cl_tagbodies = execution.cl_tagbodies or {}
+	local frame = {
+		tags = tags,
+	}
+	execution.cl_tagbodies[#execution.cl_tagbodies + 1] = frame
+
+	local function step(index, last_value)
+		if index > #form.items then
+			table.remove(execution.cl_tagbodies)
+			return k(last_value or value.list({}))
+		end
+
+		local item = form.items[index]
+
+		if datum_tag_key(item) ~= nil then
+			return step(index + 1, last_value)
+		end
+
+		local ok, produced = pcall(function()
+			return eval_form_cps(item, scope, execution, function(result)
+				return result
+			end)
+		end)
+
+		if ok then
+			return step(index + 1, produced)
+		end
+
+		if type(produced) == "table" and produced.kind == "go_signal" and produced.frame == frame then
+			local target = frame.tags[produced.tag]
+
+			if target == nil then
+				table.remove(execution.cl_tagbodies)
+				errors.raise("name", "go target is not active")
+			end
+
+			return step(target, last_value)
+		end
+
+		table.remove(execution.cl_tagbodies)
+		error(produced, 0)
+	end
+
+	return step(2, value.list({}))
+end)
+
+register_special_form_cps("go", function(form, scope, execution, _)
+	expect_form_count("go", form.items, 1, 1)
+
+	local frame, key = find_tagbody_frame(execution, form.items[2])
+
+	if frame == nil or key == nil then
+		errors.raise("name", "go target is not active")
+	end
+
+	error({
+		kind = "go_signal",
+		frame = frame,
+		tag = key,
+	}, 0)
+end)
+
+register_special_form_cps("return", function(form, scope, execution, k)
+	local items = {
+		value.symbol("return-from"),
+		value.symbol("nil"),
+	}
+
+	if form.items[2] ~= nil then
+		items[3] = form.items[2]
+	end
+
+	return eval_form_cps(value.list(items), scope, execution, k)
+end)
+
+register_special_form_cps("prog", function(form, scope, execution, k)
+	expect_form_count("prog", form.items, 1)
+
+	local tagbody_form = {
+		value.symbol("tagbody"),
+	}
+
+	for index = 3, #form.items do
+		tagbody_form[#tagbody_form + 1] = form.items[index]
+	end
+
+	local translated = value.list({
+		value.symbol("block"),
+		value.symbol("nil"),
+		value.list({
+			value.symbol("let"),
+			form.items[2],
+			value.list(tagbody_form),
+		}),
+	})
+
+	return eval_form_cps(translated, scope, execution, k)
+end)
+
+register_special_form_cps("loop", function(form, scope, execution, k)
+	return k(eval_loop_clauses(form, scope, eval_form_direct, execution))
+end)
+
+register_special_form_cps("ignore-errors", function(form, scope, execution, k)
+	local body = {}
+
+	for index = 2, #form.items do
+		body[#body + 1] = form.items[index]
+	end
+
+	if #body == 0 then
+		return k(value.list({}))
+	end
+
+	local ok, result = pcall(function()
+		return eval_sequence_cps(body, scope, execution, function(item)
+			return item
+		end)
+	end)
+
+	if ok then
+		return k(result)
+	end
+
+	if errors.is_flow_control(result) then
+		error(result, 0)
+	end
+
+	return k(value.list({}))
+end)
+
+register_special_form_cps("dolist", function(form, scope, execution, k)
+	expect_form_count("dolist", form.items, 2)
+
+	local spec = form.items[2]
+
+	if not value.is_list(spec) or #spec.items < 2 or #spec.items > 3 or not value.is_symbol(spec.items[1]) then
+		errors.raise("type", "dolist expected a (var list [result]) spec")
+	end
+
+	return eval_form_cps(spec.items[2], scope, execution, function(sequence)
+		if not value.is_list(sequence) or sequence.tail ~= nil then
+			errors.raise("type", "dolist expected a proper list")
+		end
+
+		local result_form = spec.items[3]
+		local body = {}
+
+		for index = 3, #form.items do
+			body[#body + 1] = form.items[index]
+		end
+
+		local loop_scope = env.new(scope)
+		local items = sequence.items
+
+		local function iterate(index)
+			if index > #items then
+				setq_like(loop_scope, spec.items[1].name, value.list({}))
+
+				if result_form ~= nil then
+					return eval_form_cps(result_form, loop_scope, execution, k)
+				end
+
+				return k(value.list({}))
+			end
+
+			setq_like(loop_scope, spec.items[1].name, items[index])
+
+			if #body == 0 then
+				return iterate(index + 1)
+			end
+
+			return eval_sequence_cps(body, loop_scope, execution, function()
+				return iterate(index + 1)
+			end)
+		end
+
+		return iterate(1)
+	end)
+end)
+
+register_special_form_cps("signals-error", function(form, scope, execution, k)
+	expect_form_count("signals-error", form.items, 2, 2)
+
+	local ok, result = pcall(function()
+		return eval_form_cps(form.items[2], scope, execution, function(item)
+			return item
+		end)
+	end)
+
+	if ok then
+		return k(value.list({}))
+	end
+
+	if errors.is_flow_control(result) then
+		error(result, 0)
+	end
+
+	return k(true)
+end)
+
 register_special_form_cps("do", function(form, scope, execution, k)
 	expect_form_count("do", form.items, 2)
 
@@ -2827,7 +4624,7 @@ register_special_form_cps("do", function(form, scope, execution, k)
 				local loop_scope = env.extend(scope, names, values_now)
 
 				return eval_form_cps(test_clause.items[1], loop_scope, execution, function(done)
-					if value.is_truthy(done) then
+					if is_truthy_for_mode(done, scope, execution) then
 						if #test_clause.items == 1 then
 							return k(value.list({}))
 						end
@@ -3063,7 +4860,7 @@ register_special_form_cps("guard", function(form, scope, execution, k)
 			end
 
 			return eval_form_cps(test_form, clause_scope, execution, function(test_value)
-				if not value.is_truthy(test_value) then
+				if not is_truthy_for_mode(test_value, scope, execution) then
 					return check_clause(index + 1)
 				end
 
@@ -3143,7 +4940,15 @@ end)
 function eval_expanded_form_cps(form, scope, execution, k)
 	checkpoint(execution)
 
+	if is_cl_keyword_symbol(form, scope, execution) then
+		return k(form)
+	end
+
 	if value.is_symbol(form) then
+		if use_special_lookup(scope, form.name, execution) then
+			return k(resolve_special_value(binding_scope(scope, form), form.name, execution))
+		end
+
 		return k(env.get(binding_scope(scope, form), form.name))
 	end
 
@@ -3168,10 +4973,22 @@ function eval_expanded_form_cps(form, scope, execution, k)
 		local handler = special_forms_cps[head.name]
 
 		if handler ~= nil and binding == nil then
+			if cl_only_special_forms[head.name] and not cl_compat_enabled(scope, execution) then
+				handler = nil
+			end
+		end
+
+		if handler ~= nil and binding == nil then
 			return handler(form, scope, execution, k)
 		end
 
 		local direct_handler = special_forms[head.name]
+
+		if direct_handler ~= nil and binding == nil then
+			if cl_only_special_forms[head.name] and not cl_compat_enabled(scope, execution) then
+				direct_handler = nil
+			end
+		end
 
 		if direct_handler ~= nil and binding == nil then
 			return k(direct_handler(form, scope, eval_form, execution))
@@ -3302,6 +5119,7 @@ end
 -- may switch into CPS on demand for continuations, exceptions, or dynamic-wind.
 function evaluator.eval_form(form, scope, execution)
 	local run_execution = attach_execution_helpers(execution or evaluator.new_execution())
+	run_execution.dialect = scope ~= nil and scope.dialect or run_execution.dialect
 
 	if form_needs_cps(form) then
 		return run_cps(run_execution, function(k)
@@ -3314,7 +5132,10 @@ end
 
 function evaluator.eval_source(source, scope, execution)
 	local run_execution = attach_execution_helpers(execution or evaluator.new_execution())
-	local forms = reader.read_all(source)
+	run_execution.dialect = scope ~= nil and scope.dialect or run_execution.dialect
+	local forms = reader.read_all(source, {
+		dialect = scope ~= nil and scope.dialect or "scheme",
+	})
 
 	if body_needs_cps(forms) then
 		return run_cps(run_execution, function(k)

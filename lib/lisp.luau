@@ -11,8 +11,8 @@ local reader = require("./reader")
 
 local lisp = {}
 
-function lisp.parse(source)
-	return reader.read(source)
+function lisp.parse(source, options)
+	return reader.read(source, options)
 end
 
 function lisp.eval(source_or_form, scope, execution)
@@ -30,14 +30,16 @@ function lisp.expand(source_or_form, scope)
 	local env_scope = scope or env.new(nil)
 
 	if type(source_or_form) == "string" then
-		return expand.form(reader.read(source_or_form), env_scope)
+		return expand.form(reader.read(source_or_form, {
+			dialect = env.dialect(env_scope),
+		}), env_scope)
 	end
 
 	return expand.form(source_or_form, env_scope)
 end
 
-function lisp.new_env(parent)
-	return env.new(parent)
+function lisp.new_env(parent, options)
+	return env.new(parent, options)
 end
 
 function lisp.add_builtins(scope, io_adapter)
@@ -48,8 +50,8 @@ function lisp.new_execution(options)
 	return evaluator.new_execution(options)
 end
 
-function lisp.to_string(item)
-	return printer.to_string(item)
+function lisp.to_string(item, options)
+	return printer.to_string(item, options)
 end
 
 return lisp

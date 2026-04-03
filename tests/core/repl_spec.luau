@@ -28,7 +28,7 @@ function repl_spec.run()
 		end,
 	})
 
-	assert_mod.equal(prompts[1], "lisp> ", "repl uses the primary prompt")
+	assert_mod.equal(prompts[1], "scheme> ", "repl uses the scheme prompt by default")
 	assert_mod.equal(outputs[1], "4", "repl prints define result")
 	assert_mod.equal(
 		outputs[2],
@@ -67,6 +67,29 @@ function repl_spec.run()
 		"9",
 		"repl evaluates multiline forms once complete"
 	)
+
+	local cl_prompts = {}
+	local cl_outputs = {}
+	local cl_index = 0
+	local cl_inputs = {
+		"t",
+		nil,
+	}
+
+	repl.run({
+		dialect = "cl-compat",
+		read_line = function(prompt)
+			table.insert(cl_prompts, prompt)
+			cl_index = cl_index + 1
+			return cl_inputs[cl_index]
+		end,
+		write_line = function(text)
+			table.insert(cl_outputs, text)
+		end,
+	})
+
+	assert_mod.equal(cl_prompts[1], "cl> ", "repl uses the CL prompt in cl-compat mode")
+	assert_mod.equal(cl_outputs[1], "t", "cl-compat repl prints CL truth values")
 end
 
 return repl_spec

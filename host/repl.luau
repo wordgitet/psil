@@ -28,11 +28,14 @@ function repl.run(options)
 	local opts = options or {}
 	local read_line = opts.read_line or default_read_line
 	local write_line = opts.write_line or default_write_line
-	local env = opts.env or runner.new_env(opts.io_adapter)
+	local dialect = opts.dialect or (opts.env ~= nil and opts.env.dialect) or "scheme"
+	local env = opts.env or runner.new_env(opts.io_adapter, {
+		dialect = dialect,
+	})
 	local buffer = ""
 
 	while true do
-		local prompt = "lisp> "
+		local prompt = dialect == "cl-compat" and "cl> " or "scheme> "
 
 		if buffer ~= "" then
 			prompt = "...> "
@@ -53,12 +56,16 @@ function repl.run(options)
 		if string.match(buffer, "^%s*$") then
 			buffer = ""
 		else
-			if reader.is_complete(buffer) then
+			if reader.is_complete(buffer, {
+				dialect = dialect,
+			}) then
 				local ok, result =
 					pcall(runner.eval_source, buffer, env, opts.io_adapter)
 
 				if ok then
-					write_line(lisp.to_string(result))
+					write_line(lisp.to_string(result, {
+						dialect = dialect,
+					}))
 				else
 					write_line(
 						string.format("error: %s", errors.message(result))

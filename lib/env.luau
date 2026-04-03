@@ -7,11 +7,26 @@ local value = require("./value")
 
 local env = {}
 
-function env.new(parent)
+function env.new(parent, options)
+	local opts = options or {}
 	return {
 		parent = parent,
 		values = {},
+		dialect = opts.dialect or (parent ~= nil and parent.dialect) or "scheme",
+		specials = opts.specials,
+		meta = opts.meta or (parent ~= nil and parent.meta) or {
+			docs = {},
+			cl_global_specials = {},
+		},
 	}
+end
+
+function env.dialect(scope)
+	if scope ~= nil and scope.dialect ~= nil then
+		return scope.dialect
+	end
+
+	return "scheme"
 end
 
 function env.define(scope, name, item)
@@ -78,6 +93,70 @@ function env.extend(parent, names, values)
 	end
 
 	return child
+end
+
+function env.root(scope)
+	local frame = scope
+
+	while frame ~= nil and frame.parent ~= nil do
+		frame = frame.parent
+	end
+
+	return frame
+end
+
+function env.mark_specials(scope, names)
+	scope.specials = scope.specials or {}
+
+	if #names > 0 then
+		for _, name in ipairs(names) do
+			scope.specials[name] = true
+		end
+	else
+		for name, enabled in pairs(names) do
+			if enabled then
+				scope.specials[name] = true
+			end
+		end
+	end
+
+	return scope.specials
+end
+
+function env.has_special(scope, name)
+	return scope ~= nil and scope.specials ~= nil and scope.specials[name] == true
+end
+
+function env.mark_global_special(scope, name)
+	scope.meta.cl_global_specials = scope.meta.cl_global_specials or {}
+	scope.meta.cl_global_specials[name] = true
+	return true
+end
+
+function env.is_global_special(scope, name)
+	return scope ~= nil
+		and scope.meta ~= nil
+		and scope.meta.cl_global_specials ~= nil
+		and scope.meta.cl_global_specials[name] == true
+end
+
+function env.unbind(scope, name)
+	local frame = env.find_frame(scope, name)
+
+	if frame ~= nil then
+		frame.values[name] = nil
+	end
+
+	return nil
+end
+
+function env.set_doc(scope, namespace, name, item)
+	scope.meta.docs[string.format("%s:%s", namespace, name)] = item
+	return item
+end
+
+function env.get_doc(scope, namespace, name)
+	return scope.meta.docs[string.format("%s:%s", namespace, name)]
 end
 
 return env

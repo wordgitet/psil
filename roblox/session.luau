@@ -49,7 +49,9 @@ local function set_state(self, running, stopping)
 end
 
 local function new_scope(self)
-	local scope = lisp.new_env(nil)
+	local scope = lisp.new_env(nil, {
+		dialect = self.dialect,
+	})
 
 	lisp.add_builtins(scope, roblox_io.new({
 		write = function(_, text)
@@ -68,6 +70,7 @@ end
 
 local function new_execution(self)
 	return lisp.new_execution({
+		dialect = self.dialect,
 		step_budget = self.options.step_budget,
 		yield_every = self.options.yield_every,
 		on_yield = self.options.on_yield or default_yield_callback,
@@ -126,9 +129,11 @@ local function evaluate(self, source, mode)
 		end
 	end
 
-	local result_text = lisp.to_string(result)
+	local result_text = lisp.to_string(result, {
+		dialect = self.dialect,
+	})
 
-	if not (mode == "buffer" and printed_during_eval and result_text == "()") then
+	if not (mode == "buffer" and printed_during_eval) then
 		emit(self, "result", result_text, self.active_target)
 	end
 
@@ -206,6 +211,7 @@ end
 function session.new(callbacks, options)
 	local self = setmetatable({
 		callbacks = callbacks or {},
+		dialect = "scheme",
 		history = {},
 		options = {
 			step_budget = default_options.step_budget,
@@ -223,7 +229,11 @@ function session.new(callbacks, options)
 
 	if options ~= nil then
 		for name, item in pairs(options) do
-			self.options[name] = item
+			if name == "dialect" then
+				self.dialect = item
+			else
+				self.options[name] = item
+			end
 		end
 	end
 

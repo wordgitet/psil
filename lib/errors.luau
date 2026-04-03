@@ -51,6 +51,8 @@ function errors.is_flow_control(err)
 		and (
 			err.kind == "continuation_escape"
 			or err.kind == "continuation_transfer"
+			or err.kind == "block_return"
+			or err.kind == "go_signal"
 			or err.kind == "interrupt"
 			or err.kind == "guard_raise"
 		)

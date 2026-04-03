@@ -10,6 +10,10 @@ local value = require("./value")
 
 local printer = {}
 
+local function is_cl_nil(item)
+	return value.is_list(item) and #item.items == 0 and item.tail == nil
+end
+
 local function escape_string(value)
 	value = string.gsub(value, "\\", "\\\\")
 	value = string.gsub(value, "\"", "\\\"")
@@ -143,7 +147,9 @@ local function format_complex(item)
 	)
 end
 
-function printer.to_string(item)
+function printer.to_string(item, options)
+	local opts = options or {}
+	local dialect = opts.dialect or "scheme"
 	local value_type = type(item)
 
 	if value_type == "nil" then
@@ -167,6 +173,14 @@ function printer.to_string(item)
 	end
 
 	if value_type == "boolean" then
+		if dialect == "cl-compat" then
+			if item then
+				return "t"
+			end
+
+			return "nil"
+		end
+
 		if item then
 			return "#t"
 		end
@@ -187,15 +201,19 @@ function printer.to_string(item)
 	end
 
 	if value.is_list(item) then
+		if dialect == "cl-compat" and is_cl_nil(item) then
+			return "nil"
+		end
+
 		local parts = {}
 
 		for index, part in ipairs(item.items) do
-			parts[index] = printer.to_string(part)
+			parts[index] = printer.to_string(part, options)
 		end
 
 		if item.tail ~= nil then
 			parts[#parts + 1] = "."
-			parts[#parts + 1] = printer.to_string(item.tail)
+			parts[#parts + 1] = printer.to_string(item.tail, options)
 		end
 
 		return string.format("(%s)", table.concat(parts, " "))
@@ -205,7 +223,7 @@ function printer.to_string(item)
 		local parts = {}
 
 		for index, part in ipairs(item.items) do
-			parts[index] = printer.to_string(part)
+			parts[index] = printer.to_string(part, options)
 		end
 
 		return string.format("#(%s)", table.concat(parts, " "))
@@ -243,7 +261,7 @@ function printer.to_string(item)
 
 	if value.is_promise(item) then
 		if item.forced then
-			return string.format("<promise:%s>", printer.to_string(item.value))
+			return string.format("<promise:%s>", printer.to_string(item.value, options))
 		end
 
 		return "<promise>"
@@ -253,7 +271,7 @@ function printer.to_string(item)
 		local parts = {}
 
 		for index, part in ipairs(item.items) do
-			parts[index] = printer.to_string(part)
+			parts[index] = printer.to_string(part, options)
 		end
 
 		return string.format("<values:%s>", table.concat(parts, " "))

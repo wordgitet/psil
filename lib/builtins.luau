@@ -20,6 +20,22 @@ local value = require("./value")
 
 local builtins = {}
 
+function builtins.is_truthy(item, execution)
+	if value.is_multi_values(item) then
+		if #item.items == 0 then
+			item = value.list({})
+		else
+			item = item.items[1]
+		end
+	end
+
+	if execution ~= nil and execution.dialect == "cl-compat" then
+		return item ~= false and not (value.is_list(item) and #item.items == 0 and item.tail == nil)
+	end
+
+	return value.is_truthy(item)
+end
+
 -- Multi-value procedures can flow through ordinary call paths, so builtin
 -- helpers normalize single values and value packs the same way everywhere.
 local function normalize_values(item)
@@ -943,26 +959,34 @@ local function cons(args)
 	return value.list(items, tail)
 end
 
-local function car(args)
+local function car(args, _, execution)
 	expect_count("car", args, 1)
 
 	local list = expect_list("car", args[1])
 	local root, start_index = value.list_root(list)
 
 	if root == nil or start_index == nil or start_index > #root.items then
+		if execution ~= nil and execution.dialect == "cl-compat" then
+			return value.list({})
+		end
+
 		errors.raise("value", "car expected a non-empty list")
 	end
 
 	return root.items[start_index]
 end
 
-local function cdr(args)
+local function cdr(args, _, execution)
 	expect_count("cdr", args, 1)
 
 	local list = expect_list("cdr", args[1])
 	local root, start_index = value.list_root(list)
 
 	if root == nil or start_index == nil or start_index > #root.items then
+		if execution ~= nil and execution.dialect == "cl-compat" then
+			return value.list({})
+		end
+
 		errors.raise("value", "cdr expected a non-empty list")
 	end
 
@@ -1086,9 +1110,9 @@ local function null_fn(args)
 	return value.is_list(args[1]) and #args[1].items == 0 and args[1].tail == nil
 end
 
-local function not_fn(args)
+local function not_fn(args, _, execution)
 	expect_count("not", args, 1)
-	return not value.is_truthy(args[1])
+	return not builtins.is_truthy(args[1], execution)
 end
 
 local function symbol_fn(args)
@@ -4280,12 +4304,14 @@ local function with_exception_handler_fn(args, apply_callable, execution)
 	error(result, 0)
 end
 
-local function print_fn(io_adapter)
+local function print_fn(io_adapter, dialect)
 	return function(args)
 		local parts = {}
 
 		for index, item in ipairs(args) do
-			parts[index] = printer.to_string(item)
+			parts[index] = printer.to_string(item, {
+				dialect = dialect,
+			})
 		end
 
 		local line = table.concat(parts, " ")
@@ -4296,6 +4322,10 @@ local function print_fn(io_adapter)
 			print(line)
 		end
 
+		if dialect == "cl-compat" and #args > 0 then
+			return args[#args]
+		end
+
 		return value.list({})
 	end
 end
@@ -4303,6 +4333,7 @@ end
 -- add() wires the standard environment together in one place so host and
 -- Roblox runs can share the same builtins while swapping only the I/O adapter.
 function builtins.add(scope, io_adapter)
+	local dialect = scope ~= nil and scope.dialect or "scheme"
 	local current_input_port = value.port("input", {
 		source = "",
 		io_adapter = io_adapter,
@@ -4326,6 +4357,13 @@ function builtins.add(scope, io_adapter)
 		return function(args, apply_callable, execution)
 			return fn(args, apply_callable, execution, current_input_port, current_output_port)
 		end
+	end
+	local function resolve_function_designator(item)
+		if dialect == "cl-compat" and value.is_symbol(item) then
+			return env.get(scope, item.name)
+		end
+
+		return item
 	end
 	local function with_input_port(fn)
 		return function(args, apply_callable, execution)
@@ -4427,7 +4465,20 @@ function builtins.add(scope, io_adapter)
 			cps = true,
 		},
 		apply = {
-			fn = builtins.apply_cps,
+			fn = function(args, apply_callable, execution, k)
+				if #args < 2 then
+					errors.raise("arity", string.format("apply expected at least 2 arguments, got %d", #args))
+				end
+
+				local normalized = {}
+
+				for index, item in ipairs(args) do
+					normalized[index] = item
+				end
+
+				normalized[1] = resolve_function_designator(args[1])
+				return builtins.apply_cps(normalized, apply_callable, execution, k)
+			end,
 			cps = true,
 		},
 		["call-with-values"] = {
@@ -4652,7 +4703,7 @@ function builtins.add(scope, io_adapter)
 		fn = builtins.error_cps,
 		cps = true,
 	}
-	entries.print = print_fn(io_adapter)
+		entries.print = print_fn(io_adapter, dialect)
 
 	entries["vector->string"] = vector_to_string_fn
 	entries["string->vector"] = string_to_vector_fn
@@ -5214,8 +5265,21 @@ function builtins.add(scope, io_adapter)
 		return fresh_language_env(true)
 	end
 	entries.eval = function(args, _, execution)
-		expect_count("eval", args, 2)
-		local target_scope = builtins.expect_environment("eval", args[2])
+		if scope ~= nil and scope.dialect == "cl-compat" then
+			expect_min_count("eval", args, 1)
+
+			if #args > 2 then
+				errors.raise("arity", string.format("eval expected 1..2 arguments, got %d", #args))
+			end
+		else
+			expect_count("eval", args, 2)
+		end
+
+		local target_scope = scope
+
+		if args[2] ~= nil then
+			target_scope = builtins.expect_environment("eval", args[2])
+		end
 
 		if execution == nil or execution.eval_in_env == nil then
 			errors.raise("state", "eval requires evaluator support")
@@ -5457,6 +5521,215 @@ function builtins.add(scope, io_adapter)
 	entries["balanced-quotient"] = builtins.division_quotient_fn("balanced-quotient", "balanced")
 	entries["balanced-remainder"] = builtins.division_remainder_fn("balanced-remainder", "balanced")
 
+	if dialect == "cl-compat" then
+		entries.null = null_fn
+		entries.atom = atom_fn
+		entries.eq = eq_fn
+		entries.eql = eqv_fn
+		entries.equal = equal_fn
+		entries.equalp = equal_fn
+		entries.symbolp = symbol_fn
+		entries.numberp = number_fn
+		entries.stringp = string_fn
+		entries.characterp = char_fn
+		entries.listp = list_predicate_fn
+		entries.consp = pair_fn
+		entries.functionp = procedure_fn
+		entries.funcall = function(args, apply_callable, execution)
+			expect_min_count("funcall", args, 1)
+			local fn = resolve_function_designator(args[1])
+			local call_args = {}
+
+			for index = 2, #args do
+				call_args[index - 1] = args[index]
+			end
+
+			return apply_callable(fn, call_args, execution)
+		end
+		entries["symbol-value"] = function(args)
+			expect_count("symbol-value", args, 1)
+
+			if value.is_list(args[1]) and #args[1].items == 0 and args[1].tail == nil then
+				return value.list({})
+			end
+
+			if args[1] == true then
+				return true
+			end
+
+			if not value.is_symbol(args[1]) then
+				errors.raise("type", "symbol-value expected a symbol")
+			end
+
+			return env.get(scope, args[1].name)
+		end
+		entries.boundp = function(args)
+			expect_count("boundp", args, 1)
+
+			if not value.is_symbol(args[1]) then
+				errors.raise("type", "boundp expected a symbol")
+			end
+
+			return env.find_frame(scope, args[1].name) ~= nil
+		end
+		entries.fboundp = function(args)
+			expect_count("fboundp", args, 1)
+
+			if not value.is_symbol(args[1]) then
+				errors.raise("type", "fboundp expected a symbol")
+			end
+
+			local frame = env.find_frame(scope, args[1].name)
+			return frame ~= nil and value.is_callable(frame.values[args[1].name])
+		end
+		entries["symbol-function"] = function(args)
+			expect_count("symbol-function", args, 1)
+
+			if not value.is_symbol(args[1]) then
+				errors.raise("type", "symbol-function expected a symbol")
+			end
+
+			return env.get(scope, args[1].name)
+		end
+		entries.identity = function(args)
+			expect_count("identity", args, 1)
+			return args[1]
+		end
+		entries.gensym = function(args)
+			local prefix = "G"
+
+			if args[1] ~= nil then
+				if value.is_symbol(args[1]) then
+					prefix = args[1].name
+				elseif value.is_string(args[1]) then
+					prefix = value.string_to_utf8(args[1])
+				elseif type(args[1]) == "string" then
+					prefix = args[1]
+				else
+					errors.raise("type", "gensym expected a string or symbol prefix")
+				end
+			end
+
+			builtins._gensym_counter = (builtins._gensym_counter or 0) + 1
+			return value.symbol(string.format("%s%d", prefix, builtins._gensym_counter))
+		end
+		entries["1+"] = function(args)
+			expect_count("1+", args, 1)
+			return expect_number("1+", args[1]) + 1
+		end
+		entries["1-"] = function(args)
+			expect_count("1-", args, 1)
+			return expect_number("1-", args[1]) - 1
+		end
+		entries.min = function(args)
+			expect_min_count("min", args, 1)
+			local result = expect_number("min", args[1])
+
+			for index = 2, #args do
+				local item = expect_number("min", args[index])
+
+				if item < result then
+					result = item
+				end
+			end
+
+			return result
+		end
+		entries["make-list"] = function(args)
+			expect_min_count("make-list", args, 1)
+			local count = expect_number("make-list", args[1])
+
+			if count < 0 or count ~= math.floor(count) then
+				errors.raise("type", "make-list expected a non-negative integer length")
+			end
+
+			local fill = value.list({})
+			local index = 2
+
+			while index <= #args do
+				local key = args[index]
+
+				if not value.is_symbol(key) or key.name ~= ":initial-element" then
+					errors.raise("type", "make-list only supports :initial-element keyword arguments")
+				end
+
+				if args[index + 1] == nil then
+					errors.raise("arity", "make-list expected a value after :initial-element")
+				end
+
+				fill = args[index + 1]
+				index = index + 2
+			end
+
+			local items = {}
+
+			for item_index = 1, count do
+				items[item_index] = fill
+			end
+
+			return value.list(items)
+		end
+		entries.mapcar = function(args, apply_callable, execution)
+			expect_min_count("mapcar", args, 2)
+			local fn = args[1]
+			local lists = {}
+			local shortest = nil
+
+			for index = 2, #args do
+				local list = args[index]
+
+				if not value.is_list(list) or list.tail ~= nil then
+					errors.raise("type", "mapcar expected proper list arguments")
+				end
+
+				lists[#lists + 1] = list
+
+				if shortest == nil or #list.items < shortest then
+					shortest = #list.items
+				end
+			end
+
+			local results = {}
+
+			for item_index = 1, shortest do
+				local call_args = {}
+
+				for list_index, list in ipairs(lists) do
+					call_args[list_index] = list.items[item_index]
+				end
+
+				results[#results + 1] = apply_callable(fn, call_args, execution)
+			end
+
+			return value.list(results)
+		end
+		entries.documentation = function(args)
+			expect_count("documentation", args, 2)
+
+			if not value.is_symbol(args[1]) or not value.is_symbol(args[2]) then
+				errors.raise("type", "documentation expected symbol arguments")
+			end
+
+			local doc = env.get_doc(scope, args[2].name, args[1].name)
+
+			if doc == nil then
+				return value.list({})
+			end
+
+			return doc
+		end
+		entries.makunbound = function(args)
+			expect_count("makunbound", args, 1)
+
+			if not value.is_symbol(args[1]) then
+				errors.raise("type", "makunbound expected a symbol")
+			end
+
+			env.unbind(scope, args[1].name)
+			return args[1]
+		end
+	end
+
 	for name, fn in pairs(entries) do
 		if type(fn) == "table" then
 			env.define(scope, name, value.builtin(name, fn.fn, {
@@ -5465,6 +5738,17 @@ function builtins.add(scope, io_adapter)
 		else
 			env.define(scope, name, value.builtin(name, fn))
 		end
+	end
+
+	if dialect == "cl-compat" then
+		env.define(scope, "nil", value.list({}))
+		env.define(scope, "t", true)
+		env.define(scope, "lambda-list-keywords", value.list({
+			value.symbol("&optional"),
+			value.symbol("&rest"),
+			value.symbol("&key"),
+			value.symbol("&aux"),
+		}))
 	end
 
 	return scope

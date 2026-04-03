@@ -8,11 +8,17 @@ local lisp = require("../../../lib/lisp")
 
 local source_suite = {}
 
-function source_suite.run(suite_name, cases)
+function source_suite.run(suite_name, cases, options)
+	local opts = options or {}
 	local area_counts = {}
 
 	for _, case in ipairs(cases) do
-		local actual = lisp.to_string(lisp.eval(case.input, runner.new_env()))
+		local dialect = case.dialect or opts.dialect
+		local actual = lisp.to_string(lisp.eval(case.input, runner.new_env(nil, {
+			dialect = dialect,
+		})), {
+			dialect = dialect,
+		})
 		local label = string.format(
 			"%s/%s: %s [%s]",
 			suite_name,

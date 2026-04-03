@@ -9,6 +9,25 @@ local value = require("./value")
 local expand = {}
 
 local form_expanders = {}
+local expand_cl_local_functions
+local expand_inc_dec
+local cl_only_forms = {
+	block = true,
+	decf = true,
+	defparameter = true,
+	defun = true,
+	defvar = true,
+	flet = true,
+	["function"] = true,
+	["ignore-errors"] = true,
+	incf = true,
+	macrolet = true,
+	dolist = true,
+	loop = true,
+	["return-from"] = true,
+	setf = true,
+	setq = true,
+}
 
 local function expect_form_count(name, items, min_count, max_count)
 	local count = #items - 1
@@ -193,8 +212,6 @@ local function expand_if(form, expand_form)
 end
 
 local function expand_begin(form, expand_form)
-	expect_form_count("begin", form.items, 1)
-
 	local expanded_items = {
 		form.items[1],
 	}
@@ -217,16 +234,11 @@ local function expand_dynamic_wind(form, expand_form)
 end
 
 local function expand_when_like(name, form, expand_form, inverted)
-	expect_form_count(name, form.items, 2)
+	expect_form_count(name, form.items, 1)
 
 	local condition = expand_form(form.items[2])
 	local body_forms = map_expanded(form.items, expand_form, 3)
-
-	if #body_forms == 0 then
-		errors.raise("arity", string.format("%s expected at least one body form", name))
-	end
-
-	local begin_form = build_begin_form(body_forms)
+	local begin_form = #body_forms == 0 and empty_list_literal() or build_begin_form(body_forms)
 
 	if inverted then
 		return value.list({
@@ -244,12 +256,13 @@ local function expand_when_like(name, form, expand_form, inverted)
 	})
 end
 
-local function expand_cond(form, expand_form)
+local function expand_cond(form, expand_form, scope)
 	expect_form_count("cond", form.items, 1)
 
 	local expanded_items = {
 		form.items[1],
 	}
+	local allow_test_only_clause = env.dialect(scope) == "cl-compat"
 
 	for index = 2, #form.items do
 		local clause = form.items[index]
@@ -266,7 +279,7 @@ local function expand_cond(form, expand_form)
 			table.insert(expanded_clause, expand_form(clause.items[clause_index]))
 		end
 
-		if #expanded_clause == 1 then
+		if #expanded_clause == 1 and not allow_test_only_clause then
 			errors.raise("arity", "cond clauses must have at least one body form")
 		end
 
@@ -329,18 +342,23 @@ local function expand_binding_form(name, form, expand_form)
 	local expanded_bindings = {}
 
 	for _, binding in ipairs(bindings_form.items) do
-		if not value.is_list(binding) or #binding.items ~= 2 then
+		if value.is_symbol(binding) then
+			table.insert(expanded_bindings, value.list({
+				binding,
+				empty_list_literal(),
+			}))
+		elseif not value.is_list(binding) or #binding.items ~= 2 then
 			errors.raise("type", string.format("%s bindings must be pairs", name))
-		end
+		else
+			if not value.is_symbol(binding.items[1]) then
+				errors.raise("type", string.format("%s binding names must be symbols", name))
+			end
 
-		if not value.is_symbol(binding.items[1]) then
-			errors.raise("type", string.format("%s binding names must be symbols", name))
+			table.insert(expanded_bindings, value.list({
+				binding.items[1],
+				expand_form(binding.items[2]),
+			}))
 		end
-
-		table.insert(expanded_bindings, value.list({
-			binding.items[1],
-			expand_form(binding.items[2]),
-		}))
 	end
 
 	local expanded_items = {
@@ -444,6 +462,237 @@ local function expand_parameterize(form, expand_form)
 	return value.list(expanded_items)
 end
 
+local function expand_defun(form, expand_form)
+	expect_form_count("defun", form.items, 2)
+
+	local target = form.items[2]
+	local define_target = target
+	local block_target = target
+
+	if value.is_list(target)
+		and #target.items == 2
+		and value.is_symbol(target.items[1])
+		and target.items[1].name == "setf"
+		and value.is_symbol(target.items[2]) then
+		define_target = value.symbol(string.format("(setf %s)", target.items[2].name))
+		block_target = target.items[2]
+	elseif not value.is_symbol(target) then
+		errors.raise("type", "defun expected a function name symbol")
+	end
+
+	local body_forms = map_expanded(form.items, expand_form, 4)
+	local declare_forms = {}
+	local body_start = 1
+
+	local lambda_items = {
+		value.symbol("lambda"),
+		form.items[3],
+	}
+
+	if #body_forms == 0 then
+		errors.raise("arity", "defun expected at least one body form")
+	end
+
+	while body_start <= #body_forms do
+		local body_form = body_forms[body_start]
+
+		if value.is_list(body_form)
+			and value.is_symbol(body_form.items[1])
+			and body_form.items[1].name == "declare" then
+			declare_forms[#declare_forms + 1] = body_form
+			body_start = body_start + 1
+		else
+			break
+		end
+	end
+
+	for _, declare_form in ipairs(declare_forms) do
+		lambda_items[#lambda_items + 1] = declare_form
+	end
+
+	local block_form = value.list({
+		value.symbol("block"),
+		block_target,
+	})
+
+	for index = body_start, #body_forms do
+		block_form.items[#block_form.items + 1] = body_forms[index]
+	end
+
+	lambda_items[#lambda_items + 1] = block_form
+
+	return value.list({
+		value.symbol("begin"),
+		value.list({
+			value.symbol("define"),
+			define_target,
+			value.list(lambda_items),
+		}),
+		value.list({
+			value.symbol("quote"),
+			target,
+		}),
+	})
+end
+
+local function expand_defvar_like(name, form, expand_form)
+	expect_form_count(name, form.items, 1, 3)
+
+	local target = form.items[2]
+
+	if not value.is_symbol(target) then
+		errors.raise("type", string.format("%s expected a symbol name", name))
+	end
+
+	local expanded_items = {
+		form.items[1],
+		target,
+	}
+
+	if form.items[3] ~= nil then
+		expanded_items[#expanded_items + 1] = expand_form(form.items[3])
+	end
+
+	if form.items[4] ~= nil then
+		expanded_items[#expanded_items + 1] = form.items[4]
+	end
+
+	return value.list(expanded_items)
+end
+
+local function expand_setq(form, expand_form)
+	if (#form.items - 1) % 2 ~= 0 then
+		errors.raise("arity", "setq expected name/value pairs")
+	end
+
+	local expanded_items = {
+		form.items[1],
+	}
+
+	for index = 2, #form.items, 2 do
+		if not value.is_symbol(form.items[index]) then
+			errors.raise("type", "setq expected symbol names")
+		end
+
+		expanded_items[#expanded_items + 1] = form.items[index]
+		expanded_items[#expanded_items + 1] = expand_form(form.items[index + 1])
+	end
+
+	return value.list(expanded_items)
+end
+
+local function expand_function_form(form, expand_form)
+	expect_form_count("function", form.items, 1, 1)
+
+	local target = form.items[2]
+
+	if value.is_list(target) then
+		return value.list({
+			form.items[1],
+			expand_form(target),
+		})
+	end
+
+	return form
+end
+
+expand_inc_dec = function(name, form, expand_form)
+	expect_form_count(name, form.items, 1, 2)
+
+	if not value.is_symbol(form.items[2]) then
+		errors.raise("type", string.format("%s expected a symbol place", name))
+	end
+
+	local expanded_items = {
+		form.items[1],
+		form.items[2],
+	}
+
+	if form.items[3] ~= nil then
+		expanded_items[#expanded_items + 1] = expand_form(form.items[3])
+	end
+
+	return value.list(expanded_items)
+end
+
+expand_cl_local_functions = function(name, form, expand_form)
+	expect_form_count(name, form.items, 2)
+
+	local bindings_form = form.items[2]
+
+	if not value.is_list(bindings_form) then
+		errors.raise("type", string.format("%s bindings must be a list", name))
+	end
+
+	local expanded_items = {
+		form.items[1],
+		value.list({}),
+	}
+
+	for _, binding in ipairs(bindings_form.items) do
+		if not value.is_list(binding) or #binding.items < 2 or not value.is_symbol(binding.items[1]) then
+			errors.raise("type", string.format("%s bindings must be (name formals body...) lists", name))
+		end
+
+		local expanded_binding = {
+			binding.items[1],
+			binding.items[2],
+		}
+
+		for index = 3, #binding.items do
+			expanded_binding[#expanded_binding + 1] = expand_form(binding.items[index])
+		end
+
+		expanded_items[2].items[#expanded_items[2].items + 1] = value.list(expanded_binding)
+	end
+
+	for index = 3, #form.items do
+		expanded_items[#expanded_items + 1] = expand_form(form.items[index])
+	end
+
+	return value.list(expanded_items)
+end
+
+local function expand_block(form, expand_form)
+	expect_form_count("block", form.items, 1)
+
+	if not value.is_symbol(form.items[2])
+		and not (value.is_list(form.items[2]) and #form.items[2].items == 0 and form.items[2].tail == nil) then
+		errors.raise("type", "block expected a symbol name or nil")
+	end
+
+	local expanded_items = {
+		form.items[1],
+		form.items[2],
+	}
+
+	for index = 3, #form.items do
+		expanded_items[#expanded_items + 1] = expand_form(form.items[index])
+	end
+
+	return value.list(expanded_items)
+end
+
+local function expand_return_from(form, expand_form)
+	expect_form_count("return-from", form.items, 1, 2)
+
+	if not value.is_symbol(form.items[2])
+		and not (value.is_list(form.items[2]) and #form.items[2].items == 0 and form.items[2].tail == nil) then
+		errors.raise("type", "return-from expected a block name symbol or nil")
+	end
+
+	local expanded_items = {
+		form.items[1],
+		form.items[2],
+	}
+
+	if form.items[3] ~= nil then
+		expanded_items[#expanded_items + 1] = expand_form(form.items[3])
+	end
+
+	return value.list(expanded_items)
+end
+
 register_form("quote", expand_quote)
 register_form("if", expand_if)
 register_form("define", expand_define)
@@ -454,8 +703,6 @@ register_form("case-lambda", expand_case_lambda)
 register_form("begin", expand_begin)
 register_form("dynamic-wind", expand_dynamic_wind)
 register_form("progn", function(form, expand_form)
-	expect_form_count("progn", form.items, 1)
-
 	local begin_items = {
 		value.symbol("begin"),
 	}
@@ -486,6 +733,32 @@ register_form("letrec-syntax", function(form, expand_form)
 	return expand_local_syntax_form("letrec-syntax", form, expand_form)
 end)
 register_form("parameterize", expand_parameterize)
+register_form("defun", expand_defun)
+register_form("defparameter", function(form, expand_form)
+	return expand_defvar_like("defparameter", form, expand_form)
+end)
+register_form("defvar", function(form, expand_form)
+	return expand_defvar_like("defvar", form, expand_form)
+end)
+register_form("flet", function(form, expand_form)
+	return expand_cl_local_functions("flet", form, expand_form)
+end)
+register_form("setq", expand_setq)
+register_form("function", expand_function_form)
+register_form("incf", function(form, expand_form)
+	return expand_inc_dec("incf", form, expand_form)
+end)
+register_form("decf", function(form, expand_form)
+	return expand_inc_dec("decf", form, expand_form)
+end)
+register_form("macrolet", function(form, expand_form)
+	return expand_cl_local_functions("macrolet", form, expand_form)
+end)
+register_form("loop", function(form)
+	return form
+end)
+register_form("block", expand_block)
+register_form("return-from", expand_return_from)
 
 function expand.form(form, scope)
 	if value.is_symbol(form) or not value.is_list(form) then
@@ -499,6 +772,10 @@ function expand.form(form, scope)
 	local head = form.items[1]
 
 	if value.is_symbol(head) then
+		if cl_only_forms[head.name] and env.dialect(scope) ~= "cl-compat" then
+			return form
+		end
+
 		if env.find_frame(binding_scope(scope, head), head.name) ~= nil then
 			return form
 		end

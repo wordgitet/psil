@@ -35,7 +35,7 @@ local parse_form
 
 -- Shared-structure labels are resolved during parse so later runtime code sees
 -- ordinary cyclic values instead of reader-specific placeholders.
-local function parse_list_form(tokens, index, labels, target)
+local function parse_list_form(tokens, index, labels, target, options)
 	local items = target ~= nil and target.items or {}
 	local cursor = index + 1
 	local tail = target ~= nil and target.tail or nil
@@ -69,19 +69,19 @@ local function parse_list_form(tokens, index, labels, target)
 				errors.raise("parse", "multiple dotted tails in list")
 			end
 
-			tail, cursor = parse_form(tokens, cursor + 1, labels)
+			tail, cursor = parse_form(tokens, cursor + 1, labels, options)
 
 			while tail == COMMENT_SKIPPED do
 				if tokens[cursor] == nil or tokens[cursor].kind == "close" then
 					errors.raise("parse", "dotted list must end with a single tail form")
 				end
 
-				tail, cursor = parse_form(tokens, cursor, labels)
+				tail, cursor = parse_form(tokens, cursor, labels, options)
 			end
 
 			while tokens[cursor] ~= nil and tokens[cursor].kind == "datum_comment" do
 				local skipped
-				skipped, cursor = parse_form(tokens, cursor, labels)
+				skipped, cursor = parse_form(tokens, cursor, labels, options)
 
 				if skipped ~= COMMENT_SKIPPED then
 					errors.raise("parse", "dotted list must end with a single tail form")
@@ -105,7 +105,7 @@ local function parse_list_form(tokens, index, labels, target)
 		end
 
 		local item
-		item, cursor = parse_form(tokens, cursor, labels)
+		item, cursor = parse_form(tokens, cursor, labels, options)
 
 		if item ~= COMMENT_SKIPPED then
 			table.insert(items, item)
@@ -113,7 +113,7 @@ local function parse_list_form(tokens, index, labels, target)
 	end
 end
 
-local function parse_vector_form(tokens, index, labels, target)
+local function parse_vector_form(tokens, index, labels, target, options)
 	local items = target ~= nil and target.items or {}
 	local cursor = index + 1
 
@@ -139,7 +139,7 @@ local function parse_vector_form(tokens, index, labels, target)
 		end
 
 		local item
-		item, cursor = parse_form(tokens, cursor, labels)
+		item, cursor = parse_form(tokens, cursor, labels, options)
 
 		if item ~= COMMENT_SKIPPED then
 			table.insert(items, item)
@@ -186,7 +186,9 @@ end
 
 -- Numeric atom parsing is staged instead of monolithic: prefixes, radix,
 -- exactness, real/rational forms, then rectangular complex syntax.
-local function atom_to_value(atom)
+local function atom_to_value(atom, options)
+	local opts = options or {}
+	local dialect = opts.dialect or "scheme"
 	local exactness
 	local radix = 10
 	local cursor = 1
@@ -463,10 +465,20 @@ local function atom_to_value(atom)
 		return wrap_real(number, inexact, body, exact_repr)
 	end
 
+	if dialect == "cl-compat" then
+		if atom == "nil" then
+			return value.list({})
+		end
+
+		if atom == "t" then
+			return true
+		end
+	end
+
 	return value.symbol(atom)
 end
 
-parse_form = function(tokens, index, labels)
+parse_form = function(tokens, index, labels, options)
 	labels = labels or {}
 	local token = tokens[index]
 
@@ -475,15 +487,23 @@ parse_form = function(tokens, index, labels)
 	end
 
 	if token.kind == "quote" then
-		local quoted, next_index = parse_form(tokens, index + 1)
+		local quoted, next_index = parse_form(tokens, index + 1, labels, options)
 		return value.list({
 			value.symbol("quote"),
 			quoted,
 		}), next_index
 	end
 
+	if token.kind == "function_quote" then
+		local quoted, next_index = parse_form(tokens, index + 1, labels, options)
+		return value.list({
+			value.symbol("function"),
+			quoted,
+		}), next_index
+	end
+
 	if token.kind == "quasiquote" then
-		local quoted, next_index = parse_form(tokens, index + 1)
+		local quoted, next_index = parse_form(tokens, index + 1, labels, options)
 		return value.list({
 			value.symbol("quasiquote"),
 			quoted,
@@ -491,7 +511,7 @@ parse_form = function(tokens, index, labels)
 	end
 
 	if token.kind == "unquote" then
-		local quoted, next_index = parse_form(tokens, index + 1)
+		local quoted, next_index = parse_form(tokens, index + 1, labels, options)
 		return value.list({
 			value.symbol("unquote"),
 			quoted,
@@ -499,7 +519,7 @@ parse_form = function(tokens, index, labels)
 	end
 
 	if token.kind == "unquote_splicing" then
-		local quoted, next_index = parse_form(tokens, index + 1)
+		local quoted, next_index = parse_form(tokens, index + 1, labels, options)
 		return value.list({
 			value.symbol("unquote-splicing"),
 			quoted,
@@ -507,10 +527,10 @@ parse_form = function(tokens, index, labels)
 	end
 
 	if token.kind == "datum_comment" then
-		local skipped, next_index = parse_form(tokens, index + 1, labels)
+		local skipped, next_index = parse_form(tokens, index + 1, labels, options)
 
 		while skipped == COMMENT_SKIPPED and tokens[next_index] ~= nil do
-			skipped, next_index = parse_form(tokens, next_index, labels)
+			skipped, next_index = parse_form(tokens, next_index, labels, options)
 		end
 
 		return COMMENT_SKIPPED, next_index
@@ -529,7 +549,7 @@ parse_form = function(tokens, index, labels)
 			errors.raise("parse", "unexpected '.' outside dotted list")
 		end
 
-		return atom_to_value(token.value), index + 1
+		return atom_to_value(token.value, options), index + 1
 	end
 
 	if token.kind == "label_ref" then
@@ -553,27 +573,27 @@ parse_form = function(tokens, index, labels)
 			local target = value.list({})
 			target.label_placeholder = true
 			labels[token.value] = target
-			return parse_list_form(tokens, index + 1, labels, target)
+			return parse_list_form(tokens, index + 1, labels, target, options)
 		end
 
 		if next_token.kind == "vector_open" then
 			local target = value.vector({})
 			target.label_placeholder = true
 			labels[token.value] = target
-			return parse_vector_form(tokens, index + 1, labels, target)
+			return parse_vector_form(tokens, index + 1, labels, target, options)
 		end
 
-		local parsed, next_index = parse_form(tokens, index + 1, labels)
+		local parsed, next_index = parse_form(tokens, index + 1, labels, options)
 		labels[token.value] = parsed
 		return parsed, next_index
 	end
 
 	if token.kind == "open" then
-		return parse_list_form(tokens, index, labels, nil)
+		return parse_list_form(tokens, index, labels, nil, options)
 	end
 
 	if token.kind == "vector_open" then
-		return parse_vector_form(tokens, index, labels, nil)
+		return parse_vector_form(tokens, index, labels, nil, options)
 	end
 
 	if token.kind == "bytevector_open" then
@@ -596,7 +616,7 @@ parse_form = function(tokens, index, labels)
 			end
 
 			local item
-			item, cursor = parse_form(tokens, cursor)
+			item, cursor = parse_form(tokens, cursor, labels, options)
 
 			if type(item) ~= "number" or math.floor(item) ~= item or item < 0 or item > 255 then
 				errors.raise("type", "bytevector elements must be integers in 0..255")
@@ -613,11 +633,11 @@ parse_form = function(tokens, index, labels)
 	errors.raise("parse", string.format("unexpected token '%s'", tostring(token.value)))
 end
 
-function parser.parse(tokens)
-	local form, next_index = parse_form(tokens, 1)
+function parser.parse(tokens, options)
+	local form, next_index = parse_form(tokens, 1, nil, options)
 
 	while form == COMMENT_SKIPPED and tokens[next_index] ~= nil do
-		form, next_index = parse_form(tokens, next_index)
+		form, next_index = parse_form(tokens, next_index, nil, options)
 	end
 
 	if tokens[next_index] ~= nil then
@@ -627,17 +647,17 @@ function parser.parse(tokens)
 	return form
 end
 
-function parser.parse_first(tokens, index)
-	return parse_form(tokens, index or 1)
+function parser.parse_first(tokens, index, options)
+	return parse_form(tokens, index or 1, nil, options)
 end
 
-function parser.parse_all(tokens)
+function parser.parse_all(tokens, options)
 	local forms = {}
 	local index = 1
 
 	while tokens[index] ~= nil do
 		local form
-		form, index = parse_form(tokens, index)
+		form, index = parse_form(tokens, index, nil, options)
 
 		if form ~= COMMENT_SKIPPED then
 			table.insert(forms, form)
